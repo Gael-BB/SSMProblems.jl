@@ -8,6 +8,7 @@ using Random
 using SSMProblems
 using StatsBase
 using Plots
+using MCMCDiagnosticTools
 
 include("utils.jl")
 include("particlegibbs.jl")
@@ -68,12 +69,13 @@ println("Initial b: ", [only(b_prior.μ)])
 # CHANGE PARTICLE FILTERING ALGORITHM HERE
 # ========================================
 
-b_samples = run_gibbs(
+b_samples = run_pmmh(
     N_steps, N_burnin,
     μ0, Σ0, A, c, Q, H, R,
     b_prior, ys, bf, ref_traj, b_curr, rng
 )
 
 println("Posterior mean: ", mean(b_samples))
+println("Effective sample size: ", ess(hcat(b_samples...)'))
 
-display(plot(only.(b_samples); label="Chain", xlabel="Iteration", ylabel="b_outer", legend=:topleft))
+# display(plot(only.(b_samples); label="Chain", xlabel="Iteration", ylabel="b_outer", legend=:topleft))
