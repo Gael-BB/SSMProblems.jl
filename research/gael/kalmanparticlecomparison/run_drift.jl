@@ -69,10 +69,10 @@ println("Initial b: ", [only(b_prior.μ)])
 # CHANGE PARTICLE FILTERING ALGORITHM HERE
 # ========================================
 
-b_samples = run_pmmh(
+b_samples = run_gibbs_drift(
     N_steps, N_burnin,
-    μ0, Σ0, A, c, Q, H, R,
-    b_prior, ys, bf, ref_traj, b_curr, rng
+    μ0, Σ0, A, b_curr, Q, H, c, R,
+    b_prior, ys, bf, ref_traj, rng
 )
 
 println("Posterior mean: ", mean(b_samples))
