@@ -15,7 +15,8 @@ include("pmcmc.jl")
 
 rng = MersenneTwister(SEED)
 
-b_prior = MvNormal(zeros(T, Dx), 1I)
+μ = 0.0; σ2 = 1.0
+b_prior = MvNormal(zeros(T, Dx) .+ μ, σ2 * I)
 b_true = rand(rng, b_prior)
 println("True b: ", b_true)
 
@@ -61,11 +62,11 @@ bf = BF(N_particles; threshold=1.0)
 
 b_samples = Vector{Vector{T}}(undef, N_sample)
 b_curr = [only(b_prior.μ)]
-println("Initial b: ", [only(b_prior.μ)])
+println("Initial b: ", b_curr)
 
-function model_builder_aug(θ)
+function model_builder(θ)
     return create_homogeneous_linear_gaussian_model(
-        μ0_aug, Σ0_aug, A_aug, [zeros(T, Dx); θ], Q_aug, H_aug, c, R
+        μ0, Σ0, A, θ, Q, H, c, R
     )
 end
 
@@ -86,18 +87,11 @@ end
 # ==============
 
 function b_sampler(ref_traj, rng, xs)
-    μ_prior = only(b_prior.μ)
-    σ2_prior = only(b_prior.Σ)
-    σ2 = only(Q)
-
-    K_start = firstindex(ref_traj)
-    K_end   = lastindex(ref_traj)
-
-    xs = [only(ref_traj[t] - A * ref_traj[t - 1]) for t in (K_start + 1):K_end]
+    xs = [only(ref_traj[t] - A * ref_traj[t - 1]) for t in (firstindex(ref_traj) + 1):lastindex(ref_traj)]
     n = length(xs)
     
-    μ_post = (sum(xs) / σ2 + μ_prior / σ2_prior) / (n / σ2 + 1 / σ2_prior)
-    σ2_post = 1 / (n / σ2 + 1 / σ2_prior)
+    μ_post = (sum(xs) / only(Q) + μ / σ2) / (n / only(Q) + 1 / σ2)
+    σ2_post = 1 / (n / only(Q) + 1 / σ2)
 
     return [rand(rng, Normal(μ_post, sqrt(σ2_post)))]
 end

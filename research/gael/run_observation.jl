@@ -11,13 +11,13 @@ using Plots
 using MCMCDiagnosticTools
 
 include("utils.jl")
-include("particlegibbs.jl")
-include("particlemarginalmetropolishastings.jl")
+include("pmcmc.jl")
 
 rng = MersenneTwister(SEED)
+
 α = 3.0; β = 2.0
 Q_prior = InverseGamma(α, β)
-Q_true = Matrix(Diagonal([rand(rng, Q_prior) for _ in 1:Dx]))
+Q_true = [rand(rng, Q_prior) for _ in 1:Dx]
 println("True Q: ", Q_true)
 
 # Generate model matrices/vectors
@@ -30,7 +30,7 @@ c = fill(0, Dy)
 eps = 1e-5; R = Matrix{T}(I, Dy, Dy) * eps
 
 # Define full model and sample observations
-full_model = create_homogeneous_linear_gaussian_model(μ0, Σ0, A, b, Q_true, H, c, R)
+full_model = create_homogeneous_linear_gaussian_model(μ0, Σ0, A, b, Diagonal(Q_true), H, c, R)
 _, ys = sample(rng, full_model, K)
 
 # Compute process noise samples w_t and empirical process noise covariance Q_hat
@@ -73,14 +73,53 @@ samples = Vector{Vector{T}}(undef, N_sample)
 curr = [β / (α - 1)]
 println("Initial Q: ", [β / (α - 1)])
 
-# ========================================
-# CHANGE PARTICLE FILTERING ALGORITHM HERE
-# ========================================
+function model_builder(θ)
+    return create_homogeneous_linear_gaussian_model(
+        μ0, Σ0, A, b, Diagonal(θ), H, c, R
+    )
+end
 
-samples = run_pmmh_observation(
+function prior(θ)
+    return only(logpdf(Q_prior, θ))
+end
+
+# =====================================
+# PARTICLE MARGINAL METROPOLIS-HASTINGS
+# =====================================
+
+# samples = pmmh(
+#     N_steps, N_burnin,
+#     curr,
+#     model_builder,
+#     prior,
+#     ys, bf, rng,
+#     (rng, θ) -> θ .+ 0.0001*randn(rng, length(θ))
+# )
+
+# ==============
+# PARTICLE GIBBS
+# ==============
+
+function sampler(ref_traj, rng, xs)
+    # State innovation residuals: x_t - A x_{t-1} - b
+    xs = [only(ref_traj[t] - A * ref_traj[t - 1] .- b) for t in (firstindex(ref_traj) + 1):lastindex(ref_traj)]
+    n = length(xs)
+
+    ss = sum(abs2, xs)  # sum of squared residuals
+
+    # Conjugate IG posterior
+    α_post = α + n / 2
+    β_post = β + ss / 2
+
+    return [rand(rng, InverseGamma(α_post, β_post))]
+end
+
+samples = pgibbs(
     N_steps, N_burnin,
-    μ0, Σ0, A, b, curr, H, c, R,
-    Q_prior, ys, bf, ref_traj, rng
+    curr,
+    model_builder,
+    sampler,
+    ys, bf, rng
 )
 
 println("Posterior mean: ", mean(samples))

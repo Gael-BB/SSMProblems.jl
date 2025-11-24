@@ -1,13 +1,3 @@
-"""
-    pmmh(N_steps, N_burnin, θ0, model_builder, prior, ys, bf, rng, proposer; log_proposal_ratio)
-
-Generic PMMH routine where the caller supplies a `model_builder` that maps a
-parameter value `θ` to a model compatible with `GeneralisedFilters.filter`, a
-`prior` (either a callable returning log-density or a `Distribution`), and a
-`proposer` function `(rng, θ) -> θ_prop`. The optional `log_proposal_ratio`
-keyword allows non-symmetric proposals by returning
-`log q(θ | θ_prop) - log q(θ_prop | θ)`.
-"""
 function pmmh(
     N_steps, N_burnin,
     θ0,
@@ -20,9 +10,10 @@ function pmmh(
     samples = Vector{typeof(θ0)}(undef, N_steps - N_burnin)
     logprior(θ) = prior isa Function ? prior(θ) : logpdf(prior, θ)
 
+    println(prior isa Function ? "Using callable prior." : "Using Distribution prior.")
+
     θ = deepcopy(θ0)
 
-    # Initial likelihood at starting θ
     model_init = model_builder(θ)
     _, loglik_curr = GeneralisedFilters.filter(model_init, bf, ys)
 
@@ -30,15 +21,11 @@ function pmmh(
 
     @showprogress for i in 1:N_steps
         ### θ | y (PMMH)
-
-        # Propose new parameter θ'
         θ_prop = proposer(rng, θ)
 
-        # Run PF to get log p̂(y | θ')
         model_prop = model_builder(θ_prop)
         _, loglik_prop = GeneralisedFilters.filter(model_prop, bf, ys)
 
-        # MH acceptance ratio
         log_alpha = (loglik_prop + logprior(θ_prop)) - (loglik_curr + logprior(θ))
         log_alpha += log_proposal_ratio(θ, θ_prop)  # zero for symmetric proposals
 
@@ -59,13 +46,6 @@ function pmmh(
     return samples
 end
 
-"""
-    pgibbs(N_steps, N_burnin, θ0, model_builder, θ_sampler, ys, bf, rng; ref_traj=nothing)
-
-Generic Particle Gibbs routine. The caller provides:
-- `model_builder(θ)` returning a model for `GeneralisedFilters.filter`
-- `θ_sampler(ref_traj, rng, θ_curr)` returning a new draw of θ | x, y
-"""
 function pgibbs(
     N_steps, N_burnin,
     θ0,
@@ -80,7 +60,6 @@ function pgibbs(
 
     @showprogress for i in 1:N_steps
         ### x | θ, y (CSMC)
-        # Create model
         model = model_builder(θ)
 
         cb = GeneralisedFilters.DenseAncestorCallback(nothing)
