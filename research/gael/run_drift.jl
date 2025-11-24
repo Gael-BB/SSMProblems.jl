@@ -11,8 +11,7 @@ using Plots
 using MCMCDiagnosticTools
 
 include("utils.jl")
-include("particlegibbs.jl")
-include("particlemarginalmetropolishastings.jl")
+include("pmcmc.jl")
 
 rng = MersenneTwister(SEED)
 
@@ -59,23 +58,59 @@ println("Ground truth posterior mean: ", state.μ[(Dx+1):end])
 
 N_steps = N_burnin + N_sample
 bf = BF(N_particles; threshold=1.0)
-ref_traj = nothing
 
 b_samples = Vector{Vector{T}}(undef, N_sample)
 b_curr = [only(b_prior.μ)]
 println("Initial b: ", [only(b_prior.μ)])
 
-# ========================================
-# CHANGE PARTICLE FILTERING ALGORITHM HERE
-# ========================================
+function model_builder_aug(θ)
+    return create_homogeneous_linear_gaussian_model(
+        μ0_aug, Σ0_aug, A_aug, [zeros(T, Dx); θ], Q_aug, H_aug, c, R
+    )
+end
 
-b_samples = run_gibbs_drift(
+# =====================================
+# PARTICLE MARGINAL METROPOLIS-HASTINGS
+# =====================================
+
+# b_samples = pmmh(
+#     N_steps, N_burnin,
+#     b_curr,
+#     model_builder,
+#     b_prior,
+#     ys, bf, rng
+# )
+
+# ==============
+# PARTICLE GIBBS
+# ==============
+
+function b_sampler(ref_traj, rng, xs)
+    μ_prior = only(b_prior.μ)
+    σ2_prior = only(b_prior.Σ)
+    σ2 = only(Q)
+
+    K_start = firstindex(ref_traj)
+    K_end   = lastindex(ref_traj)
+
+    xs = [only(ref_traj[t] - A * ref_traj[t - 1]) for t in (K_start + 1):K_end]
+    n = length(xs)
+    
+    μ_post = (sum(xs) / σ2 + μ_prior / σ2_prior) / (n / σ2 + 1 / σ2_prior)
+    σ2_post = 1 / (n / σ2 + 1 / σ2_prior)
+
+    return [rand(rng, Normal(μ_post, sqrt(σ2_post)))]
+end
+
+b_samples = pgibbs(
     N_steps, N_burnin,
-    μ0, Σ0, A, b_curr, Q, H, c, R,
-    b_prior, ys, bf, ref_traj, rng
+    b_curr,
+    model_builder,
+    b_sampler,
+    ys, bf, rng
 )
 
 println("Posterior mean: ", mean(b_samples))
 println("Effective sample size: ", ess(hcat(b_samples...)'))
 
-# display(plot(only.(b_samples); label="Chain", xlabel="Iteration", ylabel="b_outer", legend=:topleft))
+display(plot(only.(b_samples); label="Chain", xlabel="Iteration", ylabel="b_outer", legend=:topleft))
