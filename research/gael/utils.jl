@@ -1,10 +1,10 @@
 SEED = 12345
 Dx = 1
 Dy = 1
-K = 3
+K = 10
 T = Float64
 N_particles = 100
-N_burnin = 1
+N_burnin = 100
 N_sample = 1000
 
 function rand_cov(rng::AbstractRNG, T::Type{<:Real}, d::Int)
