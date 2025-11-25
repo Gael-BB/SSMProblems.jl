@@ -84,6 +84,19 @@ function prior(θ)
     return only(logpdf(Q_prior, θ))
 end
 
+function q_sampler(ref_traj, rng, xs)
+    xs = [only(ref_traj[t] - A * ref_traj[t - 1] .- b) for t in (firstindex(ref_traj) + 1):lastindex(ref_traj)]
+    n = length(xs)
+
+    ss = sum(abs2, xs)  # sum of squared residuals
+
+    # Conjugate IG posterior
+    α_post = α + n / 2
+    β_post = β + ss / 2
+
+    return [rand(rng, InverseGamma(α_post, β_post))]
+end
+
 println("Starting sampling using sampler type: ", sampler_type)
 # =====================================
 # PARTICLE MARGINAL METROPOLIS-HASTINGS
@@ -103,25 +116,11 @@ end
 # PARTICLE GIBBS
 # ==============
 if sampler_type == PGIBBS
-    function sampler(ref_traj, rng, xs)
-        # State innovation residuals: x_t - A x_{t-1} - b
-        xs = [only(ref_traj[t] - A * ref_traj[t - 1] .- b) for t in (firstindex(ref_traj) + 1):lastindex(ref_traj)]
-        n = length(xs)
-
-        ss = sum(abs2, xs)  # sum of squared residuals
-
-        # Conjugate IG posterior
-        α_post = α + n / 2
-        β_post = β + ss / 2
-
-        return [rand(rng, InverseGamma(α_post, β_post))]
-    end
-
     samples = pgibbs(
         N_steps, N_burnin,
         curr,
         model_builder,
-        sampler,
+        q_sampler,
         ys, bf, rng
     )
 end
@@ -129,7 +128,13 @@ end
 # EMBEDDED HIDDEN MARKOV MODEL
 # ============================
 if sampler_type == EHMM
-    println("EHMM sampler not yet implemented.")
+    samples = ehmm(
+        N_steps, N_burnin,
+        curr,
+        model_builder,
+        q_sampler,
+        ys, rng
+    )
 end
 
 println("Posterior mean: ", mean(samples))

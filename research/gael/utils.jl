@@ -8,7 +8,7 @@ N_burnin = 100
 N_sample = 1000
 
 @enum samplers PMMH PGIBBS EHMM
-sampler_type::samplers = PMMH
+sampler_type::samplers = EHMM
 
 function rand_cov(rng::AbstractRNG, T::Type{<:Real}, d::Int)
     Σ = rand(rng, T, d, d)
