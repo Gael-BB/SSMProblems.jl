@@ -85,6 +85,7 @@ end
 
 # =====================================
 # PARTICLE MARGINAL METROPOLIS-HASTINGS
+# I think the acceptance rate is small because the likelihood is broken for the R value used.
 # =====================================
 
 # samples = pmmh(
