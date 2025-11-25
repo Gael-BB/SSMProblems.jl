@@ -1,4 +1,4 @@
-SEED = 12345
+SEED = 1234
 Dx = 1
 Dy = 1
 K = 10
@@ -6,6 +6,9 @@ T = Float64
 N_particles = 100
 N_burnin = 100
 N_sample = 1000
+
+@enum samplers PMMH PGIBBS EHMM
+sampler_type::samplers = PMMH
 
 function rand_cov(rng::AbstractRNG, T::Type{<:Real}, d::Int)
     Σ = rand(rng, T, d, d)

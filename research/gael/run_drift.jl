@@ -12,6 +12,7 @@ using MCMCDiagnosticTools
 
 include("utils.jl")
 include("pmcmc.jl")
+include("ehmm.jl")
 
 rng = MersenneTwister(SEED)
 
@@ -70,39 +71,47 @@ function model_builder(θ)
     )
 end
 
+println("Starting sampling using sampler type: ", sampler_type)
 # =====================================
 # PARTICLE MARGINAL METROPOLIS-HASTINGS
 # =====================================
-
-# b_samples = pmmh(
-#     N_steps, N_burnin,
-#     b_curr,
-#     model_builder,
-#     b_prior,
-#     ys, bf, rng
-# )
-
+if sampler_type == PMMH
+    b_samples = pmmh(
+        N_steps, N_burnin,
+        b_curr,
+        model_builder,
+        b_prior,
+        ys, bf, rng
+    )
+end
 # ==============
 # PARTICLE GIBBS
 # ==============
+if sampler_type == PGIBBS
+    function b_sampler(ref_traj, rng, xs)
+        xs = [only(ref_traj[t] - A * ref_traj[t - 1]) for t in (firstindex(ref_traj) + 1):lastindex(ref_traj)]
+        n = length(xs)
+        
+        μ_post = (sum(xs) / only(Q) + μ / σ2) / (n / only(Q) + 1 / σ2)
+        σ2_post = 1 / (n / only(Q) + 1 / σ2)
 
-function b_sampler(ref_traj, rng, xs)
-    xs = [only(ref_traj[t] - A * ref_traj[t - 1]) for t in (firstindex(ref_traj) + 1):lastindex(ref_traj)]
-    n = length(xs)
-    
-    μ_post = (sum(xs) / only(Q) + μ / σ2) / (n / only(Q) + 1 / σ2)
-    σ2_post = 1 / (n / only(Q) + 1 / σ2)
+        return [rand(rng, Normal(μ_post, sqrt(σ2_post)))]
+    end
 
-    return [rand(rng, Normal(μ_post, sqrt(σ2_post)))]
+    b_samples = pgibbs(
+        N_steps, N_burnin,
+        b_curr,
+        model_builder,
+        b_sampler,
+        ys, bf, rng
+    )
 end
-
-b_samples = pgibbs(
-    N_steps, N_burnin,
-    b_curr,
-    model_builder,
-    b_sampler,
-    ys, bf, rng
-)
+# ============================
+# EMBEDDED HIDDEN MARKOV MODEL
+# ============================
+if sampler_type == EHMM
+    println("EHMM sampler not yet implemented.")
+end
 
 println("Posterior mean: ", mean(b_samples))
 println("Effective sample size: ", ess(hcat(b_samples...)'))

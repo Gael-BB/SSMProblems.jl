@@ -10,8 +10,6 @@ function pmmh(
     samples = Vector{typeof(θ0)}(undef, N_steps - N_burnin)
     logprior(θ) = prior isa Function ? prior(θ) : logpdf(prior, θ)
 
-    println(prior isa Function ? "Using callable prior." : "Using Distribution prior.")
-
     θ = deepcopy(θ0)
 
     model_init = model_builder(θ)

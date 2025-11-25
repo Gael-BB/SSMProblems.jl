@@ -12,6 +12,7 @@ using MCMCDiagnosticTools
 
 include("utils.jl")
 include("pmcmc.jl")
+include("ehmm.jl")
 
 rng = MersenneTwister(SEED)
 
@@ -83,45 +84,53 @@ function prior(θ)
     return only(logpdf(Q_prior, θ))
 end
 
+println("Starting sampling using sampler type: ", sampler_type)
 # =====================================
 # PARTICLE MARGINAL METROPOLIS-HASTINGS
 # I think the acceptance rate is small because the likelihood is broken for the R value used.
 # =====================================
-
-# samples = pmmh(
-#     N_steps, N_burnin,
-#     curr,
-#     model_builder,
-#     prior,
-#     ys, bf, rng,
-#     (rng, θ) -> θ .+ 0.0001*randn(rng, length(θ))
-# )
-
+if sampler_type == PMMH
+    samples = pmmh(
+        N_steps, N_burnin,
+        curr,
+        model_builder,
+        prior,
+        ys, bf, rng,
+        (rng, θ) -> θ .+ 0.0001*randn(rng, length(θ))
+    )
+end
 # ==============
 # PARTICLE GIBBS
 # ==============
+if sampler_type == PGIBBS
+    function sampler(ref_traj, rng, xs)
+        # State innovation residuals: x_t - A x_{t-1} - b
+        xs = [only(ref_traj[t] - A * ref_traj[t - 1] .- b) for t in (firstindex(ref_traj) + 1):lastindex(ref_traj)]
+        n = length(xs)
 
-function sampler(ref_traj, rng, xs)
-    # State innovation residuals: x_t - A x_{t-1} - b
-    xs = [only(ref_traj[t] - A * ref_traj[t - 1] .- b) for t in (firstindex(ref_traj) + 1):lastindex(ref_traj)]
-    n = length(xs)
+        ss = sum(abs2, xs)  # sum of squared residuals
 
-    ss = sum(abs2, xs)  # sum of squared residuals
+        # Conjugate IG posterior
+        α_post = α + n / 2
+        β_post = β + ss / 2
 
-    # Conjugate IG posterior
-    α_post = α + n / 2
-    β_post = β + ss / 2
+        return [rand(rng, InverseGamma(α_post, β_post))]
+    end
 
-    return [rand(rng, InverseGamma(α_post, β_post))]
+    samples = pgibbs(
+        N_steps, N_burnin,
+        curr,
+        model_builder,
+        sampler,
+        ys, bf, rng
+    )
 end
-
-samples = pgibbs(
-    N_steps, N_burnin,
-    curr,
-    model_builder,
-    sampler,
-    ys, bf, rng
-)
+# ============================
+# EMBEDDED HIDDEN MARKOV MODEL
+# ============================
+if sampler_type == EHMM
+    println("EHMM sampler not yet implemented.")
+end
 
 println("Posterior mean: ", mean(samples))
 println("Effective sample size: ", ess(hcat(samples...)'))
