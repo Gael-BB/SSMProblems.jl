@@ -39,22 +39,27 @@ model = create_homogeneous_linear_gaussian_model(μ0, Σ0, A, b, Q, H, c, R)
 cb = GeneralisedFilters.StateCallback(nothing, nothing)
 _, _ = GeneralisedFilters.filter(rng, model, KalmanFilter(), ys; callback=cb)
 
-α_closed = α
-β_closed = β
+function update_closed_params(α, β, ys, cb, model, Dy)
+    α_closed = α
+    β_closed = β
 
-for t in eachindex(ys)
-    global α_closed, β_closed  # or two separate lines
-    μ_pred, Σ_pred = GeneralisedFilters.mean_cov(cb.proposed_states[t])
+    for t in eachindex(ys)
+        μ_pred, Σ_pred = GeneralisedFilters.mean_cov(cb.proposed_states[t])
 
-    ŷ = H * μ_pred + c
-    S = H * Σ_pred * H' + R
-    e = ys[t] - ŷ
+        ŷ = H * μ_pred + c
+        S = H * Σ_pred * H' + R
+        e = ys[t] - ŷ
 
-    α_closed += Dy / 2
-    β_closed += 0.5 * dot(e, S \ e)
+        α_closed += Dy / 2
+        β_closed += 0.5 * dot(e, S \ e)
+    end
+
+    return α_closed, β_closed
 end
 
-println("Final posterior mean: ", β_closed / (α_closed - 1))
+α_closed, β_closed = update_closed_params(α, β, ys, cb, model, Dy)
+
+println("Ground truth posterior mean: ", β_closed / (α_closed - 1))
 
 N_steps = N_burnin + N_sample
 bf = BF(N_particles; threshold=1.0)
@@ -83,16 +88,21 @@ function prior(θ)
     return logpdf(σ2_prior, θ[1])
 end
 
+invQ = inv(Q)
+invR = inv(R)
 function q_sampler(ref_traj, rng, xs)
-    # Process residuals x_t - (A x_{t-1} + b) and observation residuals y_t - (H x_t + c)
-    proc_res = [only(ref_traj[t] - A * ref_traj[t - 1] .- b) for t in (firstindex(ref_traj) + 1):lastindex(ref_traj)]
-    obs_res = [only(ys[t] - H * ref_traj[t] .- c) for t in firstindex(ys):lastindex(ys)]
+    # Residuals: process x_t - (A x_{t-1} + b), observation y_t - (H x_t + c)
+    proc_res = [Array(ref_traj[t] .- (A * ref_traj[t - 1] .+ b)) for t in (firstindex(ref_traj) + 1):lastindex(ref_traj)]
+    obs_res = [Array(ys[t] .- (H * ref_traj[t] .+ c)) for t in firstindex(ys):lastindex(ys)]
 
-    # Sum of squared residuals scaled by their base variances (since Var = θ * Q/R)
-    ss = sum(abs2, proc_res) / only(Q) + sum(abs2, obs_res) / only(R)
-    n = length(proc_res) + length(obs_res)
+    # Sum of Mahalanobis distances with base covariances (Var = θ * Q/R)
+    proc_ss = sum(r -> dot(r, invQ * r), proc_res)
+    obs_ss = sum(r -> dot(r, invR * r), obs_res)
+    ss = proc_ss + obs_ss
 
-    # Conjugate IG posterior for the shared variance scale θ
+    # Total degrees of freedom contributed by all residual components
+    n = length(proc_res) * Dx + length(obs_res) * Dy
+
     α_post = α + n / 2
     β_post = β + ss / 2
 
