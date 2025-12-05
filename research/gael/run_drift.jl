@@ -62,8 +62,9 @@ N_steps = N_burnin + N_sample
 bf = BF(N_particles; threshold=1.0)
 
 b_samples = Vector{Vector{T}}(undef, N_sample)
-b_curr = [only(b_prior.μ)]
+b_curr = b_prior.μ
 println("Initial b: ", b_curr)
+
 
 function model_builder(θ)
     return create_homogeneous_linear_gaussian_model(
@@ -71,14 +72,21 @@ function model_builder(θ)
     )
 end
 
+Qinv = inv(Q)
+Σ_prior_inv = inv(b_prior.Σ)
 function b_sampler(ref_traj, rng, xs)
-    xs = [only(ref_traj[t] - A * ref_traj[t - 1]) for t in (firstindex(ref_traj) + 1):lastindex(ref_traj)]
-    n = length(xs)
-    
-    μ_post = (sum(xs) / only(Q) + μ / σ2) / (n / only(Q) + 1 / σ2)
-    σ2_post = 1 / (n / only(Q) + 1 / σ2)
+    # compute residuals r_t = x_t - A * x_{t-1} for t=2..T
+    residuals = [Array(ref_traj[t] - A * ref_traj[t-1]) for t in (firstindex(ref_traj) + 1):lastindex(ref_traj)]
+    n = length(residuals)
+    sum_r = reduce(+, residuals)
 
-    return [rand(rng, Normal(μ_post, sqrt(σ2_post)))]
+    μ_prior = b_prior.μ
+    Σ_prior = b_prior.Σ
+
+    Σ_post = inv(n * Qinv + Σ_prior_inv)
+    μ_post = Σ_post * (Qinv * sum_r + Σ_prior_inv * μ_prior)
+
+    return rand(rng, MvNormal(vec(μ_post), Symmetric(Σ_post)))
 end
 
 println("Starting sampling using sampler type: ", sampler_type)
@@ -123,4 +131,4 @@ end
 println("Posterior mean: ", mean(b_samples))
 println("Effective sample size: ", ess(hcat(b_samples...)'))
 
-display(plot(only.(b_samples); label="Chain", xlabel="Iteration", ylabel="b_outer", legend=:topleft))
+# display(plot(only.(b_samples); label="Chain", xlabel="Iteration", ylabel="b_outer", legend=:topleft))

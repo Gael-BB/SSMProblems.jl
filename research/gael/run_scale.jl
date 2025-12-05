@@ -35,6 +35,27 @@ R = rand_cov(rng, T, Dy)
 full_model = create_homogeneous_linear_gaussian_model(μ0, Σ0, A, b, σ2_true .* Q, H, c, σ2_true .* R)
 _, ys = sample(rng, full_model, K)
 
+model = create_homogeneous_linear_gaussian_model(μ0, Σ0, A, b, Q, H, c, R)
+cb = GeneralisedFilters.StateCallback(nothing, nothing)
+_, _ = GeneralisedFilters.filter(rng, model, KalmanFilter(), ys; callback=cb)
+
+α_closed = α
+β_closed = β
+
+for t in eachindex(ys)
+    global α_closed, β_closed  # or two separate lines
+    μ_pred, Σ_pred = GeneralisedFilters.mean_cov(cb.proposed_states[t])
+
+    ŷ = H * μ_pred + c
+    S = H * Σ_pred * H' + R
+    e = ys[t] - ŷ
+
+    α_closed += Dy / 2
+    β_closed += 0.5 * dot(e, S \ e)
+end
+
+println("Final posterior mean: ", β_closed / (α_closed - 1))
+
 N_steps = N_burnin + N_sample
 bf = BF(N_particles; threshold=1.0)
 ref_traj = nothing
@@ -120,4 +141,4 @@ end
 println("Posterior mean: ", mean(samples))
 println("Effective sample size: ", ess(hcat(samples...)'))
 
-display(plot(only.(samples); label="Chain", xlabel="Iteration", ylabel="σ2", legend=:topleft))
+# display(plot(only.(samples); label="Chain", xlabel="Iteration", ylabel="σ2", legend=:topleft))
