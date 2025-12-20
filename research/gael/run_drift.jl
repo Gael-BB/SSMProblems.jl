@@ -90,10 +90,13 @@ function b_sampler(ref_traj, rng, xs)
 end
 
 println("Starting sampling using sampler type: ", sampler_type)
-# =====================================
-# PARTICLE MARGINAL METROPOLIS-HASTINGS
-# =====================================
+
 if sampler_type == PMMH
+    # Diagnostic: check variance of log-likelihood estimate
+    println("Estimating log-likelihood variance...")
+    V = estimate_log_likelihood_variance(b_curr, model_builder, bf, ys)
+    println("Log-likelihood variance at initial b: ", V)
+    
     b_samples = pmmh(
         N_steps, N_burnin,
         b_curr,
