@@ -100,7 +100,7 @@ if sampler_type == PMMH
         model_builder,
         b_prior,
         ys, bf, rng,
-        (rng, θ) -> θ .+ 0.4*randn(rng, length(θ))
+        # (rng, θ) -> θ .+ 0.4*randn(rng, length(θ))
     )
 end
 # ==============
