@@ -1,18 +1,29 @@
-using GeneralisedFilters
 using Distributions
 using LinearAlgebra
-using LogExpFunctions
-using ProgressMeter
-using OffsetArrays
 using Random
 using SSMProblems
+using GeneralisedFilters
+using ProgressMeter
 using StatsBase
 using Plots
 using MCMCDiagnosticTools
 
-include("utils.jl")
-include("pmcmc.jl")
-include("ehmm.jl")
+# Load local research module
+push!(LOAD_PATH, joinpath(@__DIR__, "src"))
+using GaelResearch
+
+const SEED = 12345
+const Dx = 2
+const Dy = 2
+const K = 10
+const T = Float64
+const N_particles = 100
+const N_burnin = 100
+const N_sample = 1000
+const TUNE_PARTICLES = false
+
+@enum samplers PMMH_TYPE PGIBBS_TYPE EHMM_TYPE
+sampler_type::samplers = PMMH_TYPE
 
 rng = MersenneTwister(SEED)
 
@@ -33,11 +44,11 @@ R = rand_cov(rng, T, Dy)
 
 # Define full model and sample observations
 full_model = create_homogeneous_linear_gaussian_model(μ0, Σ0, A, b, σ2_true .* Q, H, c, σ2_true .* R)
-_, ys = sample(rng, full_model, K)
+_, xs, ys = sample(rng, full_model, K)
 
-model = create_homogeneous_linear_gaussian_model(μ0, Σ0, A, b, Q, H, c, R)
+model_init = create_homogeneous_linear_gaussian_model(μ0, Σ0, A, b, Q, H, c, R)
 cb = GeneralisedFilters.StateCallback(nothing, nothing)
-_, _ = GeneralisedFilters.filter(rng, model, KalmanFilter(), ys; callback=cb)
+_, _ = GeneralisedFilters.filter(rng, model_init, KalmanFilter(), ys; callback=cb)
 
 function update_closed_params(α, β, ys, cb, model, Dy)
     α_closed = α
@@ -57,35 +68,19 @@ function update_closed_params(α, β, ys, cb, model, Dy)
     return α_closed, β_closed
 end
 
-α_closed, β_closed = update_closed_params(α, β, ys, cb, model, Dy)
-
+α_closed, β_closed = update_closed_params(α, β, ys, cb, model_init, Dy)
 println("Ground truth posterior mean: ", β_closed / (α_closed - 1))
 
-N_steps = N_burnin + N_sample
-bf = BF(N_particles; threshold=1.0)
-ref_traj = nothing
-
-samples = Vector{Vector{T}}(undef, N_sample)
-curr = [β / (α - 1)]
-println("Initial σ2: ", [β / (α - 1)])
-
 struct ZeroLikelihoodModel end
-GeneralisedFilters.filter(::ZeroLikelihoodModel, bf, ys) = (nothing, -Inf)
+GeneralisedFilters.filter(::AbstractRNG, ::ZeroLikelihoodModel, ::GeneralisedFilters.AbstractFilter, ::AbstractVector) = (nothing, -Inf)
 
 function model_builder(θ)
     if θ[1] .<= 0.0
-        return ZeroLikelihoodModel()  # returns -Inf log-likelihood downstream
+        return ZeroLikelihoodModel()
     end
     return create_homogeneous_linear_gaussian_model(
-        μ0, Σ0, A, b, θ .* Q, H, c, θ .* R
+        μ0, Σ0, A, b, θ[1] .* Q, H, c, θ[1] .* R
     )
-end
-
-function prior(θ)
-    if θ[1] <= 0.0
-        return -Inf
-    end
-    return logpdf(σ2_prior, θ[1])
 end
 
 invQ = inv(Q)
@@ -109,49 +104,33 @@ function q_sampler(ref_traj, rng, xs)
     return [rand(rng, InverseGamma(α_post, β_post))]
 end
 
+# Setup AbstractMCMC model
+prior_logpdf(θ) = (θ[1] <= 0) ? -Inf : logpdf(σ2_prior, θ[1])
+model = ParameterisedSSM(model_builder, prior_logpdf)
+bf = BF(N_particles; threshold=1.0)
+
 println("Starting sampling using sampler type: ", sampler_type)
 
-if sampler_type == PMMH
-    # Diagnostic: check variance of log-likelihood estimate
-    println("Estimating log-likelihood variance...")
-    V = estimate_log_likelihood_variance(curr, model_builder, bf, ys)
-    println("Log-likelihood variance at initial theta: ", V)
-
-    samples = pmmh(
-        N_steps, N_burnin,
-        curr,
-        model_builder,
-        prior,
-        ys, bf, rng,
-        # (rng, θ) -> θ .+ 0.3*randn(rng, length(θ))
-    )
-end
-# ==============
-# PARTICLE GIBBS
-# ==============
-if sampler_type == PGIBBS
-    samples = pgibbs(
-        N_steps, N_burnin,
-        curr,
-        model_builder,
-        q_sampler,
-        ys, bf, rng
-    )
-end
-# ============================
-# EMBEDDED HIDDEN MARKOV MODEL
-# ============================
-if sampler_type == EHMM
-    samples = ehmm(
-        N_steps, N_burnin,
-        curr,
-        model_builder,
-        q_sampler,
-        ys, rng
-    )
+samples = if sampler_type == PMMH_TYPE
+    println("Estimating required particle count...")
+    θ_curr = [β / (α - 1)]
+    m_curr = model_builder(θ_curr)
+    
+    N_est, V = estimate_particle_count(rng, m_curr, ys, N -> BF(N; threshold=1.0); initial_N=N_particles)
+    println("Log-likelihood variance at N=$N_particles: ", V)
+    if TUNE_PARTICLES println("Estimated particles for variance=1.0: ", N_est) end
+    
+    N_run = TUNE_PARTICLES ? N_est : N_particles
+    bf_tuned = BF(N_run; threshold=1.0)
+    sampler = PMMH(bf_tuned; d=1)
+    sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=θ_curr)
+elseif sampler_type == PGIBBS_TYPE
+    sampler = PGibbs(bf, q_sampler)
+    sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=[β / (α - 1)])
+elseif sampler_type == EHMM_TYPE
+    sampler = EHMM(q_sampler)
+    sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=[β / (α - 1)])
 end
 
 println("Posterior mean: ", mean(samples))
 println("Effective sample size: ", ess(hcat(samples...)'))
-
-# display(plot(only.(samples); label="Chain", xlabel="Iteration", ylabel="σ2", legend=:topleft))

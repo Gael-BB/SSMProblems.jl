@@ -1,18 +1,29 @@
-using GeneralisedFilters
 using Distributions
 using LinearAlgebra
-using LogExpFunctions
-using ProgressMeter
-using OffsetArrays
 using Random
 using SSMProblems
+using GeneralisedFilters
+using ProgressMeter
 using StatsBase
 using Plots
 using MCMCDiagnosticTools
 
-include("utils.jl")
-include("pmcmc.jl")
-include("ehmm.jl")
+# Load local research module
+push!(LOAD_PATH, joinpath(@__DIR__, "src"))
+using GaelResearch
+
+const SEED = 12345
+const Dx = 1
+const Dy = 1
+const K = 10
+const T = Float64
+const N_particles = 100
+const N_burnin = 100
+const N_sample = 1000
+const TUNE_PARTICLES = false
+
+@enum samplers PMMH_TYPE PGIBBS_TYPE EHMM_TYPE
+sampler_type::samplers = PMMH_TYPE
 
 rng = MersenneTwister(SEED)
 
@@ -32,9 +43,9 @@ R = rand_cov(rng, T, Dy)
 
 # Define full model and sample observations
 full_model = create_homogeneous_linear_gaussian_model(μ0, Σ0, A, b_true, Q, H, c, R)
-_, ys = sample(rng, full_model, K)
+_, xs, ys = sample(rng, full_model, K)
 
-# Define augemented dynamics
+# Define augmented dynamics
 μ0_aug = [μ0; b_prior.μ]
 Σ0_aug = [
     Σ0 zeros(T, Dx, Dx)
@@ -57,14 +68,6 @@ aug_model = create_homogeneous_linear_gaussian_model(
 )
 state, _ = GeneralisedFilters.filter(rng, aug_model, KalmanFilter(), ys)
 println("Ground truth posterior mean: ", state.μ[(Dx+1):end])
-
-N_steps = N_burnin + N_sample
-bf = BF(N_particles; threshold=1.0)
-
-b_samples = Vector{Vector{T}}(undef, N_sample)
-b_curr = b_prior.μ
-println("Initial b: ", b_curr)
-
 
 function model_builder(θ)
     return create_homogeneous_linear_gaussian_model(
@@ -89,49 +92,32 @@ function b_sampler(ref_traj, rng, xs)
     return rand(rng, MvNormal(vec(μ_post), Symmetric(Σ_post)))
 end
 
+# Setup AbstractMCMC model
+model = ParameterisedSSM(model_builder, b_prior)
+bf = BF(N_particles; threshold=1.0)
+
 println("Starting sampling using sampler type: ", sampler_type)
 
-if sampler_type == PMMH
-    # Diagnostic: check variance of log-likelihood estimate
-    println("Estimating log-likelihood variance...")
-    V = estimate_log_likelihood_variance(b_curr, model_builder, bf, ys)
-    println("Log-likelihood variance at initial b: ", V)
+b_samples = if sampler_type == PMMH_TYPE
+    println("Estimating required particle count...")
+    b_curr = b_prior.μ
+    m_curr = model_builder(b_curr)
     
-    b_samples = pmmh(
-        N_steps, N_burnin,
-        b_curr,
-        model_builder,
-        b_prior,
-        ys, bf, rng,
-        # (rng, θ) -> θ .+ 0.4*randn(rng, length(θ))
-    )
-end
-# ==============
-# PARTICLE GIBBS
-# ==============
-if sampler_type == PGIBBS
-    b_samples = pgibbs(
-        N_steps, N_burnin,
-        b_curr,
-        model_builder,
-        b_sampler,
-        ys, bf, rng
-    )
-end
-# ============================
-# EMBEDDED HIDDEN MARKOV MODEL
-# ============================
-if sampler_type == EHMM
-    b_samples = ehmm(
-        N_steps, N_burnin,
-        b_curr,
-        model_builder,
-        b_sampler,
-        ys, rng
-    )
+    N_est, V = estimate_particle_count(rng, m_curr, ys, N -> BF(N; threshold=1.0); initial_N=N_particles)
+    println("Log-likelihood variance at N=$N_particles: ", V)
+    if TUNE_PARTICLES println("Estimated particles for variance=1.0: ", N_est) end
+    
+    N_run = TUNE_PARTICLES ? N_est : N_particles
+    bf_tuned = BF(N_run; threshold=1.0)
+    sampler = PMMH(bf_tuned; d=length(b_prior))
+    sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=b_curr)
+elseif sampler_type == PGIBBS_TYPE
+    sampler = PGibbs(bf, b_sampler)
+    sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin)
+elseif sampler_type == EHMM_TYPE
+    sampler = EHMM(b_sampler)
+    sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin)
 end
 
 println("Posterior mean: ", mean(b_samples))
 println("Effective sample size: ", ess(hcat(b_samples...)'))
-
-# display(plot(only.(b_samples); label="Chain", xlabel="Iteration", ylabel="b_outer", legend=:topleft))
