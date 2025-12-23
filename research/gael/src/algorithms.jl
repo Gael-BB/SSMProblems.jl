@@ -12,6 +12,9 @@ using LogExpFunctions
 using ..Models
 using ..Utils
 
+
+using OffsetArrays
+
 export PMMH, PGibbs, EHMM
 
 # Helper for Cholesky with jitter
@@ -166,68 +169,69 @@ function AbstractMCMC.sample(
     return samples
 end
 
+
 ## EHMM ########################################################################
 
-struct EHMM{S<:Function} <: AbstractMCMC.AbstractSampler
+struct EHMM{F<:GeneralisedFilters.AbstractFilter, S<:Function} <: AbstractMCMC.AbstractSampler
+    filter_algo::F
     θ_sampler::S
 end
 
-function sample_latent_trajectory(rng::AbstractRNG, model::StateSpaceModel, ys)
-    Tsteps = length(ys)
-    prior = SSMProblems.prior(model)
+
+function log_transition_density(model::StateSpaceModel, t, x_next, x_curr)
     dyn = SSMProblems.dyn(model)
-    obs = SSMProblems.obs(model)
+    # Check if dyn has A, b, Q fields (Linear Gaussian)
+    if hasproperty(dyn, :A) && hasproperty(dyn, :b) && hasproperty(dyn, :Q)
+        dist = MvNormal(dyn.A * x_curr + dyn.b, dyn.Q)
+        return logpdf(dist, x_next)
+    else
+        # Fallback using 'transition' if it existed, or error.
+        # Since we couldn't find 'transition' in SSMProblems, we error for now unless we find another way.
+        error("Generic transition density not implemented for $(typeof(dyn)). Only HomogeneousLinearGaussianLatentDynamics is supported in this research implementation.")
+    end
+end
 
-    μ0, Σ0 = GeneralisedFilters.calc_initial(prior)
+function backward_simulation(rng::AbstractRNG, model::StateSpaceModel, particles, ancestors)
+    T = length(particles) - 1 # particles is 0:T
     
-    # This assumes Linear Gaussian for now as in the original ehmm.jl
-    # In a more general version, this would use GeneralisedFilters.filter
+    # Pre-allocate trajectory
+    # particles[t] is a vector of particles at time t
+    D = length(particles[T][1]) # Dimension of state
+    traj = Vector{Vector{eltype(particles[T][1])}}(undef, T + 1)
     
-    As = [GeneralisedFilters.calc_params(dyn, t)[1] for t in 1:Tsteps]
-    bs = [GeneralisedFilters.calc_params(dyn, t)[2] for t in 1:Tsteps]
-    Qs = [GeneralisedFilters.calc_params(dyn, t)[3] for t in 1:Tsteps]
-    Hs = [GeneralisedFilters.calc_params(obs, t)[1] for t in 1:Tsteps]
-    cs = [GeneralisedFilters.calc_params(obs, t)[2] for t in 1:Tsteps]
-    Rs = [GeneralisedFilters.calc_params(obs, t)[3] for t in 1:Tsteps]
-
-    m_pred = μ0
-    P_pred = ensure_posdef(Σ0)
-
-    m_filt = [zeros(length(μ0)) for _ in 1:Tsteps]
-    P_filt = [zeros(length(μ0), length(μ0)) for _ in 1:Tsteps]
-    P_pred_store = [zeros(length(μ0), length(μ0)) for _ in 1:Tsteps]
-
-    for t in 1:Tsteps
-        P_pred_store[t] = P_pred
-        S = Hs[t] * P_pred * Hs[t]' + Rs[t]
-        K = P_pred * Hs[t]' / cholesky(S)
-        innov = ys[t] - (Hs[t] * m_pred + cs[t])
+    # 1. Select x_T
+    idx = rand(rng, 1:length(particles[T]))
+    traj[T + 1] = particles[T][idx]
+    
+    # 2. Backward pass
+    for t in (T-1):-1:0
+        x_next = traj[t+2] # traj is 1-based in this Vector, so T+1 maps to T. t=T-1 maps to T+1 (index for T).
+                           # We want x_{t+1}. If traj index 1 is t=0, index k is t=k-1.
+                           # t+1 is index t+2? No.
+                           # index 1 = t=0.
+                           # index 2 = t=1.
+                           # index t+1 = t.
+                           # index t+2 = t+1.
+                           # So x_{t+1} is at index t+2.
         
-        m_f = m_pred + K * innov
-        P_f = (I - K * Hs[t]) * P_pred * (I - K * Hs[t])' + K * Rs[t] * K'
+        ps = particles[t]
+        log_ws = Vector{Float64}(undef, length(ps))
         
-        m_filt[t] = m_f
-        P_filt[t] = ensure_posdef(P_f)
-
-        if t < Tsteps
-            m_pred = As[t] * m_f + bs[t]
-            P_pred = ensure_posdef(As[t] * P_filt[t] * As[t]' + Qs[t])
+        for k in eachindex(ps)
+            log_ws[k] = log_transition_density(model, t, x_next, ps[k])
         end
-    end
-
-    xs = Vector{Vector{eltype(μ0)}}(undef, Tsteps)
-    xs[Tsteps] = rand(rng, MvNormal(m_filt[Tsteps], P_filt[Tsteps]))
-    for t in (Tsteps - 1):-1:1
-        P_f, m_f = P_filt[t], m_filt[t]
-        P_p_next = P_pred_store[t + 1]
-        C = P_f * As[t]' / cholesky(P_p_next)
         
-        mean = m_f + C * (xs[t + 1] - (As[t] * m_f + bs[t]))
-        cov = ensure_posdef(P_f - C * P_p_next * C')
-        xs[t] = rand(rng, MvNormal(mean, cov))
+        # Numerical stability handling
+        max_log_w = maximum(log_ws)
+        ws = exp.(log_ws .- max_log_w)
+        ws ./= sum(ws)
+        
+        # Sample index
+        idx = sample(rng, 1:length(ps), Weights(ws))
+        traj[t + 1] = ps[idx]
     end
-
-    return xs
+    
+    return OffsetArray(traj, 0:T)
 end
 
 function AbstractMCMC.sample(
@@ -243,10 +247,50 @@ function AbstractMCMC.sample(
     θ = init_θ === nothing ? rand(rng, model.prior) : init_θ
     samples = Vector{typeof(θ)}(undef, n_samples)
     
+    # Initial trajectory for conditional SMC (if needed)
+    # Standard PGAS (Particle Gibbs with Ancestor Sampling) / Backward Simulation 
+    # actually generates a NEW trajectory by backward sampling the *entire* ancestry.
+    # But standard Particle Gibbs (PG) requires conditioning on the previous trajectory.
+    # If we do simple Backward Simulation on the particles generated by a Conditional PF (CSMC),
+    # that is PGBS.
+    
+    ref_traj = nothing
+    
     @showprogress for i in 1:(n_samples + n_burnin)
         m = model.model_builder(θ)
-        traj = sample_latent_trajectory(rng, m, observations)
-        θ = sampler.θ_sampler(traj, rng, θ)
+        
+        # Run Conditional Particle Filter
+        # GeneralisedFilters.filter supports ref_state to condition on.
+        # We need to map ref_traj (Vector of states) to ref_state implies by GeneralisedFilters?
+        # GeneralisedFilters usually expects just the trajectory for 'ref_state'.
+        
+        cb = GeneralisedFilters.DenseAncestorCallback(nothing)
+        
+        # Note: If ref_traj is constructed, passed to filter.
+        # GeneralisedFilters.filter(..., ref_state=ref_traj)
+        
+        _, loglik = GeneralisedFilters.filter(
+            rng, 
+            m, 
+            sampler.filter_algo, 
+            observations; 
+            ref_state = ref_traj, 
+            callback = cb
+        )
+        
+        # Extract particles and ancestors from callback container
+        # particles is OffsetVector 0:T
+        particles = cb.container.particles
+        ancestors = cb.container.ancestors
+        
+        # Backward Simulation
+        # This samples a SINGLE trajectory from the particle system
+        ref_traj = backward_simulation(rng, m, particles, ancestors)
+        
+        # Sample Parameters
+        # The parameter sampler needs the full latent trajectory
+        # Pushes new theta
+        θ = sampler.θ_sampler(ref_traj, rng, θ)
         
         if i > n_burnin
             samples[i - n_burnin] = deepcopy(θ)

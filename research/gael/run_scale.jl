@@ -23,7 +23,7 @@ const N_sample = 1000
 const TUNE_PARTICLES = false
 
 @enum samplers PMMH_TYPE PGIBBS_TYPE EHMM_TYPE
-sampler_type::samplers = PMMH_TYPE
+sampler_type::samplers = PGIBBS_TYPE
 
 rng = MersenneTwister(SEED)
 
@@ -112,7 +112,7 @@ bf = BF(N_particles; threshold=1.0)
 println("Starting sampling using sampler type: ", sampler_type)
 
 samples = if sampler_type == PMMH_TYPE
-    println("Estimating required particle count...")
+    println("Estimating log-likelihood variance...")
     θ_curr = [β / (α - 1)]
     m_curr = model_builder(θ_curr)
     
@@ -122,14 +122,15 @@ samples = if sampler_type == PMMH_TYPE
     
     N_run = TUNE_PARTICLES ? N_est : N_particles
     bf_tuned = BF(N_run; threshold=1.0)
-    sampler = PMMH(bf_tuned; d=1)
+    sampler = PMMH(bf_tuned; d=1, adapt_end=N_burnin)
     sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=θ_curr)
 elseif sampler_type == PGIBBS_TYPE
     sampler = PGibbs(bf, q_sampler)
-    sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=[β / (α - 1)])
+    sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=θ_curr)
+
 elseif sampler_type == EHMM_TYPE
-    sampler = EHMM(q_sampler)
-    sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=[β / (α - 1)])
+    sampler = EHMM(bf, q_sampler)
+    sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=θ_curr)
 end
 
 println("Posterior mean: ", mean(samples))
