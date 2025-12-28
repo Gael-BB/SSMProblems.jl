@@ -23,7 +23,7 @@ const N_sample = 1000
 const TUNE_PARTICLES = false
 
 @enum samplers PMMH_TYPE PGIBBS_TYPE EHMM_TYPE
-sampler_type::samplers = PGIBBS_TYPE
+sampler_type::samplers = EHMM_TYPE
 
 rng = MersenneTwister(SEED)
 

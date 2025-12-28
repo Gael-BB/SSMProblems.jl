@@ -23,7 +23,7 @@ const N_sample = 1000
 const TUNE_PARTICLES = false
 
 @enum samplers PMMH_TYPE PGIBBS_TYPE EHMM_TYPE
-sampler_type::samplers = PGIBBS_TYPE
+sampler_type::samplers = EHMM_TYPE
 
 rng = MersenneTwister(SEED)
 
@@ -129,6 +129,7 @@ elseif sampler_type == PGIBBS_TYPE
     sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=θ_curr)
 
 elseif sampler_type == EHMM_TYPE
+    θ_curr = [β / (α - 1)]
     sampler = EHMM(bf, q_sampler)
     sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=θ_curr)
 end
