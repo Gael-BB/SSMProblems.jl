@@ -87,6 +87,7 @@ function AbstractMCMC.sample(
     m_init = model.model_builder(θ)
     _, loglik_curr = GeneralisedFilters.filter(rng, m_init, sampler.filter_algo, observations)
     
+    n_accepted = 0
     @showprogress for i in 1:(n_samples + n_burnin)
         # Propose
         θ_prop = θ .+ (L * randn(rng, d))
@@ -99,6 +100,7 @@ function AbstractMCMC.sample(
         if log(rand(rng)) < log_alpha
             θ = θ_prop
             loglik_curr = loglik_prop
+            n_accepted += 1
         end
         
         # Adaptation
@@ -124,6 +126,7 @@ function AbstractMCMC.sample(
         end
     end
     
+    println("Acceptance rate: ", n_accepted / (n_samples + n_burnin))
     return samples
 end
 
@@ -179,54 +182,55 @@ end
 
 
 function log_transition_density(model::StateSpaceModel, t, x_next, x_curr)
+    # Generic transition density
+    # Try to use SSMProblems interface first if available
+    # For now, we rely on checking LinearGaussian properties or falling back
+    
     dyn = SSMProblems.dyn(model)
     # Check if dyn has A, b, Q fields (Linear Gaussian)
     if hasproperty(dyn, :A) && hasproperty(dyn, :b) && hasproperty(dyn, :Q)
+        # We assume time-invariant or we would need to access A[t] etc if they are arrays
+        # But usually dyn.A is the matrix itself.
+        # If the model is time-varying, A might be a function or vector.
+        # For this research code, we assume HomogeneousLinearGaussianLatentDynamics
         dist = MvNormal(dyn.A * x_curr + dyn.b, dyn.Q)
         return logpdf(dist, x_next)
     else
-        # Fallback using 'transition' if it existed, or error.
-        # Since we couldn't find 'transition' in SSMProblems, we error for now unless we find another way.
-        error("Generic transition density not implemented for $(typeof(dyn)). Only HomogeneousLinearGaussianLatentDynamics is supported in this research implementation.")
+         error("Generic transition density not implemented for $(typeof(dyn)). Only HomogeneousLinearGaussianLatentDynamics is supported in this research implementation.")
     end
 end
 
-function backward_simulation(rng::AbstractRNG, model::StateSpaceModel, particles, ancestors)
+function backward_simulation(rng::AbstractRNG, model::StateSpaceModel, particles, log_weights_T)
     T = length(particles) - 1 # particles is 0:T
     
     # Pre-allocate trajectory
-    # particles[t] is a vector of particles at time t
-    D = length(particles[T][1]) # Dimension of state
-    traj = Vector{Vector{eltype(particles[T][1])}}(undef, T + 1)
+    traj = Vector{eltype(particles[T])}(undef, T + 1)
     
-    # 1. Select x_T
-    idx = rand(rng, 1:length(particles[T]))
-    traj[T + 1] = particles[T][idx]
+    # 1. Select x_T using the final weights from the filter
+    ps_T = particles[T]
+    w_T = softmax(log_weights_T)
+    idx = sample(rng, 1:length(ps_T), Weights(w_T))
+    traj[T + 1] = ps_T[idx]
     
     # 2. Backward pass
     for t in (T-1):-1:0
-        x_next = traj[t+2] # traj is 1-based in this Vector, so T+1 maps to T. t=T-1 maps to T+1 (index for T).
-                           # We want x_{t+1}. If traj index 1 is t=0, index k is t=k-1.
-                           # t+1 is index t+2? No.
-                           # index 1 = t=0.
-                           # index 2 = t=1.
-                           # index t+1 = t.
-                           # index t+2 = t+1.
-                           # So x_{t+1} is at index t+2.
+        x_next = traj[t+2] # x_{t+1}
         
         ps = particles[t]
         log_ws = Vector{Float64}(undef, length(ps))
         
         for k in eachindex(ps)
+            # Prior weight is assumed uniform (1/N) because these are resampled particles
+            # So we only care about transition density
             log_ws[k] = log_transition_density(model, t, x_next, ps[k])
         end
         
-        # Numerical stability handling
+        # Normalize weights
         max_log_w = maximum(log_ws)
         ws = exp.(log_ws .- max_log_w)
         ws ./= sum(ws)
         
-        # Sample index
+        # Sample
         idx = sample(rng, 1:length(ps), Weights(ws))
         traj[t + 1] = ps[idx]
     end
@@ -260,16 +264,13 @@ function AbstractMCMC.sample(
         m = model.model_builder(θ)
         
         # Run Conditional Particle Filter
-        # GeneralisedFilters.filter supports ref_state to condition on.
-        # We need to map ref_traj (Vector of states) to ref_state implies by GeneralisedFilters?
-        # GeneralisedFilters usually expects just the trajectory for 'ref_state'.
+        # For PGBS, we run a CPF (which conditions on the previous trajectory ref_traj)
+        # And then we act as if we forget the trajectory and just sample a new one backwards.
+        # This is valid for PGBS.
         
         cb = GeneralisedFilters.DenseAncestorCallback(nothing)
         
-        # Note: If ref_traj is constructed, passed to filter.
-        # GeneralisedFilters.filter(..., ref_state=ref_traj)
-        
-        _, loglik = GeneralisedFilters.filter(
+        bf_state, loglik = GeneralisedFilters.filter(
             rng, 
             m, 
             sampler.filter_algo, 
@@ -278,18 +279,19 @@ function AbstractMCMC.sample(
             callback = cb
         )
         
-        # Extract particles and ancestors from callback container
-        # particles is OffsetVector 0:T
+        # Extract particles from callback container
+        # particles is OffsetVector 0:T containing vector of particles
         particles = cb.container.particles
-        ancestors = cb.container.ancestors
+        
+        # Extract final weights from bf_state
+        final_log_weights = getfield.(bf_state.particles, :log_w)
         
         # Backward Simulation
         # This samples a SINGLE trajectory from the particle system
-        ref_traj = backward_simulation(rng, m, particles, ancestors)
+        ref_traj = backward_simulation(rng, m, particles, final_log_weights)
         
         # Sample Parameters
         # The parameter sampler needs the full latent trajectory
-        # Pushes new theta
         θ = sampler.θ_sampler(ref_traj, rng, θ)
         
         if i > n_burnin
