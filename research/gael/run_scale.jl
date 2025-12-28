@@ -130,7 +130,7 @@ elseif sampler_type == PGIBBS_TYPE
 
 elseif sampler_type == EHMM_TYPE
     θ_curr = [β / (α - 1)]
-    sampler = EHMM(bf, q_sampler)
+    sampler = EHMM(bf, q_sampler, 10)
     sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=θ_curr)
 end
 

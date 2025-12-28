@@ -116,7 +116,7 @@ elseif sampler_type == PGIBBS_TYPE
     sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin)
 
 elseif sampler_type == EHMM_TYPE
-    sampler = EHMM(bf, b_sampler)
+    sampler = EHMM(bf, b_sampler, 10)
     sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin)
 end
 

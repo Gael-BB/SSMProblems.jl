@@ -178,6 +178,11 @@ end
 struct EHMM{F<:GeneralisedFilters.AbstractFilter, S<:Function} <: AbstractMCMC.AbstractSampler
     filter_algo::F
     θ_sampler::S
+    L::Int
+end
+
+function EHMM(filter_algo, θ_sampler; L=15)
+    return EHMM(filter_algo, θ_sampler, L)
 end
 
 
@@ -266,6 +271,110 @@ function backward_simulation(rng::AbstractRNG, model::StateSpaceModel, particles
     return OffsetArray(traj, 0:T)
 end
 
+function embedded_hmm_sampling(rng::AbstractRNG, model::StateSpaceModel, particles, ref_traj, L::Int, observations)
+    T = length(particles) - 1 # particles is 0:T
+    
+    # 1. Create Pools
+    pools = Vector{Vector{eltype(particles[T])}}(undef, T + 1)
+    
+    for t in 0:T
+        ps = particles[t]
+        # particles in container are likely raw states (post-resampling or equal weight approximation).
+        # We sample uniformly from them.
+        
+        # One MUST be ref_traj[t]
+        current_ref = ref_traj[t]
+        
+        # Select L-1 from particles (uniform)
+        # We use sampling WITH replacement if particles is smaller than L?
+        # Usually N_particles > L.
+        # We sample indices.
+        
+        inds = rand(rng, 1:length(ps), L - 1)
+        pool_t = ps[inds]
+        push!(pool_t, current_ref)
+        
+        pools[t + 1] = pool_t
+    end
+    
+    # 2. Forward Pass on the Embedded HMM
+    # We need to compute alpha[t][k] = P(x_t = pool[t][k] | y_{1:t})
+    # alpha[0][k] = 1/L (or uniform over pool[0] if we view them as samples from prior)
+    # Actually, standard HMM forward pass:
+    # alpha[t][j] = p(y_t | pool[t][j]) * sum_i (alpha[t-1][i] * p(pool[t][j] | pool[t-1][i]))
+    
+    log_alpha = [Vector{Float64}(undef, L) for _ in 0:T]
+    
+    # Initialization (t=0)
+    # At t=0, we have samples from prior. 
+    # y_0 usually doesn't exist or is not observed in this setup (observations are 1:K).
+    # So alpha[0] is uniform 1/L.
+    fill!(log_alpha[1], -log(L))
+    
+    for t in 1:T
+        # t here means time step t (1 to K). 
+        # pools index is t+1 (because 1-based vector for 0:T).
+        pool_prev = pools[t]     # pool at t-1
+        pool_curr = pools[t + 1] # pool at t
+        
+        log_alpha_t = Vector{Float64}(undef, L)
+        
+        # Precompute observations density for current pool
+        log_obs = [log_observation_density(model, t, x, observations[t]) for x in pool_curr]
+        
+        for j in 1:L
+            x_curr = pool_curr[j]
+            
+            # Compute transition log-probs from all i in prev
+            # log( sum_i exp(log_alpha_prev[i] + log_trans[i,j]) )
+            
+            log_trans_terms = Vector{Float64}(undef, L)
+            for i in 1:L
+                x_prev = pool_prev[i]
+                log_trans_terms[i] = log_alpha[t][i] + log_transition_density(model, t - 1, x_curr, x_prev)
+            end
+            
+            log_sum_trans = logsumexp(log_trans_terms)
+            log_alpha_t[j] = log_obs[j] + log_sum_trans
+        end
+        
+        log_alpha[t + 1] = log_alpha_t
+    end
+    
+    # 3. Backward Sampling
+    # Sample x_T from alpha[T]
+    traj = Vector{eltype(pools[1])}(undef, T + 1)
+    
+    # Sample index at T
+    w_T = softmax(log_alpha[T + 1])
+    idx_T = sample(rng, 1:L, Weights(w_T))
+    traj[T + 1] = pools[T + 1][idx_T]
+    
+    curr_idx = idx_T
+    
+    for t in (T-1):-1:0
+        pool_curr = pools[t + 1] # pool at t
+        pool_next = pools[t + 2] # pool at t+1
+        
+        x_next = pool_next[curr_idx]
+        
+        # Compute backward weights
+        # p(x_t=i | x_{t+1}=curr, y_{1:t}) \propto alpha[t][i] * p(x_{t+1} | x_t)
+        
+        log_ws = Vector{Float64}(undef, L)
+        for i in 1:L
+            x_curr = pool_curr[i]
+            log_ws[i] = log_alpha[t + 1][i] + log_transition_density(model, t, x_next, x_curr)
+        end
+        
+        w_t = softmax(log_ws)
+        curr_idx = sample(rng, 1:L, Weights(w_t))
+        traj[t + 1] = pool_curr[curr_idx]
+    end
+    
+    return OffsetArray(traj, 0:T)
+end
+
 function AbstractMCMC.sample(
     rng::AbstractRNG,
     model::ParameterisedSSM,
@@ -276,25 +385,13 @@ function AbstractMCMC.sample(
     init_θ = nothing,
     kwargs...
 )
-    θ = init_θ === nothing ? rand(rng, model.prior) : init_θ
-    samples = Vector{typeof(θ)}(undef, n_samples)
+    theta = init_θ === nothing ? rand(rng, model.prior) : init_θ
+    samples = Vector{typeof(theta)}(undef, n_samples)
     
     # Initialization: Run a standard Particle Filter to get a valid initial trajectory
-    m_init = model.model_builder(θ)
+    m_init = model.model_builder(theta)
     
-    # We ignore the state from the user request snippet for likelihood, 
-    # but we actually need the state for the trajectory. 
-    # However, to be strict with the user request:
-    # "The likelihood estimate is not correctly implemented. You should use _, loglik_curr = GeneralisedFilters.filter(rng, m_init, sampler.filter_algo, observations)"
-    # We will compute the likelihood here.
-    _, loglik_curr = GeneralisedFilters.filter(rng, m_init, sampler.filter_algo, observations)
-    
-    # Now we need a trajectory. The above call discarded it (as per instruction variable `_`).
-    # Ideally we should have kept it. But sticking to the specific line requested:
-    # We will likely need to run it again or just execute it differently.
-    # To avoid double computation, I will capture the state.
-    
-    # Run filter WITH callback to get history for BS
+    # Run filter WITH callback to get history
     cb_init = GeneralisedFilters.DenseAncestorCallback(nothing)
     bf_state, loglik_curr = GeneralisedFilters.filter(
         rng, 
@@ -304,13 +401,13 @@ function AbstractMCMC.sample(
         callback = cb_init
     )
     
-    # Initial backward simulation to get ref_traj
+    # Initial backward simulation to get ref_traj (standard PGBS is fine for init)
     particles = cb_init.container.particles
     final_log_weights = getfield.(bf_state.particles, :log_w)
     ref_traj = backward_simulation(rng, m_init, particles, final_log_weights, observations)
     
     @showprogress for i in 1:(n_samples + n_burnin)
-        m = model.model_builder(θ)
+        m = model.model_builder(theta)
         
         # Run Conditional Particle Filter (CSMC)
         cb = GeneralisedFilters.DenseAncestorCallback(nothing)
@@ -324,17 +421,15 @@ function AbstractMCMC.sample(
             callback = cb
         )
         
-        # Backward Simulation (PGBS)
-        # Extract particles from callback container (OffsetVector 0:T)
+        # Embedded HMM Sampling (Pool size L)
         particles = cb.container.particles
-        final_log_weights = getfield.(bf_state.particles, :log_w)
-        ref_traj = backward_simulation(rng, m, particles, final_log_weights, observations)
+        ref_traj = embedded_hmm_sampling(rng, m, particles, ref_traj, sampler.L, observations)
         
         # Sample Parameters given the trajectory
-        θ = sampler.θ_sampler(ref_traj, rng, θ)
+        theta = sampler.θ_sampler(ref_traj, rng, theta)
         
         if i > n_burnin
-            samples[i - n_burnin] = deepcopy(θ)
+            samples[i - n_burnin] = deepcopy(theta)
         end
     end
     
