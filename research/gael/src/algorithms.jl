@@ -173,6 +173,8 @@ function AbstractMCMC.sample(
 end
 
 
+using StaticArrays
+
 ## EHMM ########################################################################
 
 struct EHMM{F<:GeneralisedFilters.AbstractFilter, S<:Function} <: AbstractMCMC.AbstractSampler
@@ -230,21 +232,7 @@ function backward_simulation(rng::AbstractRNG, model::StateSpaceModel, particles
     # 2. Backward pass
     for t in (T-1):-1:0
         x_next = traj[t+2] # x_{t+1}
-        y_curr = observations[t + 1] # Indexing observations? ys is 1:T. t is 0:T-1.
-        # usually observations corresponds to time 1:T.
-        # time t here is 0..T-1.
-        # wait. particles[t] is state at time t.
-        # if t=0, it's prior. usually no observation at t=0?
-        # Standard filter: 0 is prior. 1..T are steps.
-        # BUT run_scale.jl ys is 1:K (K steps).
-        # filter runs for length(ys).
-        # particles has T+1 length (0 to T).
-        # We backward sample from T-1 down to 0.
-        # At time t, we look at particles[t].
-        # We need weight w_t.
-        # w_t \propto p(y_t | x_t) * w_{t-1}.
-        # If t=0, usually w_0 is uniform (prior). No observation at t=0 unless specified.
-        # In run_scale, μ0, Σ0 is prior. observations start at t=1.
+        # y_curr = observations[t + 1] 
         
         ps = particles[t]
         log_ws = Vector{Float64}(undef, length(ps))
@@ -260,8 +248,12 @@ function backward_simulation(rng::AbstractRNG, model::StateSpaceModel, particles
         
         # Normalize weights
         max_log_w = maximum(log_ws)
-        ws = exp.(log_ws .- max_log_w)
-        ws ./= sum(ws)
+        if max_log_w == -Inf
+            ws = fill(1.0 / length(ps), length(ps))
+        else
+            ws = exp.(log_ws .- max_log_w)
+            ws ./= sum(ws)
+        end
         
         # Sample
         idx = sample(rng, 1:length(ps), Weights(ws))
@@ -272,81 +264,82 @@ function backward_simulation(rng::AbstractRNG, model::StateSpaceModel, particles
 end
 
 function embedded_hmm_sampling(rng::AbstractRNG, model::StateSpaceModel, particles, ref_traj, L::Int, observations)
+    _embedded_hmm_sampling(rng, model, particles, ref_traj, Val(L), observations)
+end
+
+function _embedded_hmm_sampling(rng::AbstractRNG, model::StateSpaceModel, particles, ref_traj, ::Val{L}, observations) where {L}
     T = length(particles) - 1 # particles is 0:T
     
-    # 1. Create Pools
-    pools = Vector{Vector{eltype(particles[T])}}(undef, T + 1)
+    # 1. Create Pools (SVector for pool, standard Vector for text)
+    StateType = eltype(particles[0])
+    PoolType = SVector{L, StateType}
+    pools = Vector{PoolType}(undef, T + 1)
     
     for t in 0:T
         ps = particles[t]
-        # particles in container are likely raw states (post-resampling or equal weight approximation).
-        # We sample uniformly from them.
-        
-        # One MUST be ref_traj[t]
         current_ref = ref_traj[t]
         
-        # Select L-1 from particles (uniform)
-        # We use sampling WITH replacement if particles is smaller than L?
-        # Usually N_particles > L.
-        # We sample indices.
-        
+        # We sample indices
         inds = rand(rng, 1:length(ps), L - 1)
-        pool_t = ps[inds]
-        push!(pool_t, current_ref)
         
+        # Construct pool using SVector with ntuple to handle non-isbits StateType
+        pool_t = SVector{L, StateType}(ntuple(k -> k < L ? ps[inds[k]] : current_ref, Val(L)))
         pools[t + 1] = pool_t
     end
     
-    # 2. Forward Pass on the Embedded HMM
-    # We need to compute alpha[t][k] = P(x_t = pool[t][k] | y_{1:t})
-    # alpha[0][k] = 1/L (or uniform over pool[0] if we view them as samples from prior)
-    # Actually, standard HMM forward pass:
-    # alpha[t][j] = p(y_t | pool[t][j]) * sum_i (alpha[t-1][i] * p(pool[t][j] | pool[t-1][i]))
-    
-    log_alpha = [Vector{Float64}(undef, L) for _ in 0:T]
+    # 2. Forward Pass
+    # log_alpha[t][k] = P(x_t = pool[t][k] | y_{1:t})
     
     # Initialization (t=0)
-    # At t=0, we have samples from prior. 
-    # y_0 usually doesn't exist or is not observed in this setup (observations are 1:K).
-    # So alpha[0] is uniform 1/L.
-    fill!(log_alpha[1], -log(L))
+    # alpha[0] is uniform 1/L.
+    current_log_alpha = SVector{L, Float64}(fill(-log(L), L))
+    
+    # Store history for backward sampling
+    all_log_alphas = Vector{SVector{L, Float64}}(undef, T + 1)
+    all_log_alphas[1] = current_log_alpha
     
     for t in 1:T
-        # t here means time step t (1 to K). 
-        # pools index is t+1 (because 1-based vector for 0:T).
         pool_prev = pools[t]     # pool at t-1
         pool_curr = pools[t + 1] # pool at t
         
-        log_alpha_t = Vector{Float64}(undef, L)
-        
         # Precompute observations density for current pool
-        log_obs = [log_observation_density(model, t, x, observations[t]) for x in pool_curr]
+        # SVector comprehension
+        log_obs = SVector{L, Float64}([log_observation_density(model, t, pool_curr[j], observations[t]) for j in 1:L])
         
-        for j in 1:L
+        # We compute next alphas
+        # log_alpha_next[j] = log_obs[j] + logsumexp(log_alpha_prev[i] + log_trans[i,j])
+        
+        next_log_alpha_m = MVector{L, Float64}(undef)
+        
+        @inbounds for j in 1:L
             x_curr = pool_curr[j]
             
             # Compute transition log-probs from all i in prev
-            # log( sum_i exp(log_alpha_prev[i] + log_trans[i,j]) )
-            
-            log_trans_terms = Vector{Float64}(undef, L)
+            log_trans_terms_m = MVector{L, Float64}(undef)
             for i in 1:L
                 x_prev = pool_prev[i]
-                log_trans_terms[i] = log_alpha[t][i] + log_transition_density(model, t - 1, x_curr, x_prev)
+                log_trans_terms_m[i] = current_log_alpha[i] + log_transition_density(model, t - 1, x_curr, x_prev)
             end
             
-            log_sum_trans = logsumexp(log_trans_terms)
-            log_alpha_t[j] = log_obs[j] + log_sum_trans
+            log_sum_trans = logsumexp(log_trans_terms_m)
+            next_log_alpha_m[j] = log_obs[j] + log_sum_trans
         end
         
-        log_alpha[t + 1] = log_alpha_t
+        current_log_alpha = SVector(next_log_alpha_m)
+        all_log_alphas[t + 1] = current_log_alpha
     end
     
     # 3. Backward Sampling
-    # Sample x_T from alpha[T]
-    traj = Vector{eltype(pools[1])}(undef, T + 1)
+    traj = Vector{StateType}(undef, T + 1)
     
     # Sample index at T
-    w_T = softmax(log_alpha[T + 1])
+    log_alpha_T = all_log_alphas[T + 1]
+    max_val = maximum(log_alpha_T)
+    if max_val == -Inf
+        w_T = SVector{L, Float64}(ntuple(_ -> 1.0/L, Val(L)))
+    else
+        w_T = softmax(log_alpha_T)
+    end
     idx_T = sample(rng, 1:L, Weights(w_T))
     traj[T + 1] = pools[T + 1][idx_T]
     
@@ -359,15 +352,19 @@ function embedded_hmm_sampling(rng::AbstractRNG, model::StateSpaceModel, particl
         x_next = pool_next[curr_idx]
         
         # Compute backward weights
-        # p(x_t=i | x_{t+1}=curr, y_{1:t}) \propto alpha[t][i] * p(x_{t+1} | x_t)
-        
-        log_ws = Vector{Float64}(undef, L)
-        for i in 1:L
+        log_ws_m = MVector{L, Float64}(undef)
+        @inbounds for i in 1:L
             x_curr = pool_curr[i]
-            log_ws[i] = log_alpha[t + 1][i] + log_transition_density(model, t, x_next, x_curr)
+            log_ws_m[i] = all_log_alphas[t + 1][i] + log_transition_density(model, t, x_next, x_curr)
         end
         
-        w_t = softmax(log_ws)
+        log_ws_s = SVector(log_ws_m)
+        max_val = maximum(log_ws_s)
+        if max_val == -Inf
+            w_t = SVector{L, Float64}(ntuple(_ -> 1.0/L, Val(L)))
+        else
+            w_t = softmax(log_ws_s)
+        end
         curr_idx = sample(rng, 1:L, Weights(w_t))
         traj[t + 1] = pool_curr[curr_idx]
     end
