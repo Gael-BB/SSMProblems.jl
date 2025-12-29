@@ -177,10 +177,13 @@ using StaticArrays
 
 ## EHMM ########################################################################
 
-struct EHMM{F<:GeneralisedFilters.AbstractFilter, S<:Function} <: AbstractMCMC.AbstractSampler
+struct EHMM{L, F<:GeneralisedFilters.AbstractFilter, S<:Function} <: AbstractMCMC.AbstractSampler
     filter_algo::F
     θ_sampler::S
-    L::Int
+end
+
+function EHMM(filter_algo, θ_sampler, L::Int)
+    return EHMM{L, typeof(filter_algo), typeof(θ_sampler)}(filter_algo, θ_sampler)
 end
 
 function EHMM(filter_algo, θ_sampler; L=15)
@@ -264,6 +267,10 @@ function backward_simulation(rng::AbstractRNG, model::StateSpaceModel, particles
 end
 
 function embedded_hmm_sampling(rng::AbstractRNG, model::StateSpaceModel, particles, ref_traj, L::Int, observations)
+    _embedded_hmm_sampling(rng, model, particles, ref_traj, Val(L), observations)
+end
+
+function embedded_hmm_sampling(rng::AbstractRNG, model::StateSpaceModel, particles, ref_traj, ::Val{L}, observations) where {L}
     _embedded_hmm_sampling(rng, model, particles, ref_traj, Val(L), observations)
 end
 
@@ -375,13 +382,13 @@ end
 function AbstractMCMC.sample(
     rng::AbstractRNG,
     model::ParameterisedSSM,
-    sampler::EHMM,
+    sampler::EHMM{L},
     observations::AbstractVector;
     n_samples::Int,
     n_burnin::Int = 0,
     init_θ = nothing,
     kwargs...
-)
+) where {L}
     theta = init_θ === nothing ? rand(rng, model.prior) : init_θ
     samples = Vector{typeof(theta)}(undef, n_samples)
     
@@ -420,7 +427,7 @@ function AbstractMCMC.sample(
         
         # Embedded HMM Sampling (Pool size L)
         particles = cb.container.particles
-        ref_traj = embedded_hmm_sampling(rng, m, particles, ref_traj, sampler.L, observations)
+        ref_traj = embedded_hmm_sampling(rng, m, particles, ref_traj, Val(L), observations)
         
         # Sample Parameters given the trajectory
         theta = sampler.θ_sampler(ref_traj, rng, theta)
