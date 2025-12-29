@@ -8,6 +8,7 @@ using StatsBase
 using Plots
 using MCMCDiagnosticTools
 using Profile
+using StaticArrays
 
 # Load local research module
 push!(LOAD_PATH, joinpath(@__DIR__, "src"))
@@ -18,7 +19,7 @@ const Dx = 1
 const Dy = 1
 const K = 10
 const T = Float64
-const N_particles = 10
+const N_particles = 100
 const N_burnin = 100
 const N_sample = 1000
 const TUNE_PARTICLES = false
@@ -36,34 +37,51 @@ function main(sampler_type::samplers = DEFAULT_SAMPLER)
     println("True b: ", b_true)
 
     # Generate model matrices/vectors
-    μ0 = rand(rng, T, Dx)
-    Σ0 = rand_cov(rng, T, Dx)
-    A = rand(rng, T, Dx, Dx)
-    Q = rand_cov(rng, T, Dx)
-    H = rand(rng, T, Dy, Dx)
-    c = rand(rng, T, Dy)
-    R = rand_cov(rng, T, Dy)
+    μ0 = @SVector rand(rng, T, Dx)
+    Σ0 = SMatrix{Dx, Dx}(rand_cov(rng, T, Dx))
+    A = @SMatrix rand(rng, T, Dx, Dx)
+    Q = SMatrix{Dx, Dx}(rand_cov(rng, T, Dx))
+    H = @SMatrix rand(rng, T, Dy, Dx)
+    c = @SVector rand(rng, T, Dy)
+    R = SMatrix{Dy, Dy}(rand_cov(rng, T, Dy))
 
     # Define full model and sample observations
     full_model = create_homogeneous_linear_gaussian_model(μ0, Σ0, A, b_true, Q, H, c, R)
     _, xs, ys = sample(rng, full_model, K)
 
     # Define augmented dynamics
-    μ0_aug = [μ0; b_prior.μ]
-    Σ0_aug = [
-        Σ0 zeros(T, Dx, Dx)
-        zeros(T, Dx, Dx) b_prior.Σ
-    ]
-    A_aug = [
-        A I
-        zeros(T, Dx, Dx) I
-    ]
-    b_aug = zeros(T, 2 * Dx)
-    Q_aug = [
-        Q zeros(T, Dx, Dx)
-        zeros(T, Dx, Dx) zeros(T, Dx, Dx)
-    ]
-    H_aug = [H zeros(T, Dy, Dx)]
+    μ0_aug = vcat(μ0, b_prior.μ) # SVector concatenation
+    # Construct block diagonal matrices manually or via helper for StaticArrays if needed, 
+    # but for simplicity and since these are init params, we can keep them standard or make them static.
+    # Ideally, keep everything static.
+    
+    # helper for block diag
+    z_Dx = @SMatrix zeros(T, Dx, Dx)
+    z_Dy_Dx = @SMatrix zeros(T, Dy, Dx)
+    
+    # We need to be careful with block construction for SMatrix to ensure types are correct
+    # A_aug construction:
+    # A  I
+    # 0  I
+    
+    A_aug = SMatrix{2*Dx, 2*Dx}([
+        A I;
+        z_Dx I
+    ])
+    
+    Σ0_aug = SMatrix{2*Dx, 2*Dx}([
+        Σ0 z_Dx;
+        z_Dx b_prior.Σ
+    ])
+    
+    b_aug = @SVector zeros(T, 2 * Dx)
+    
+    Q_aug = SMatrix{2*Dx, 2*Dx}([
+        Q z_Dx;
+        z_Dx z_Dx
+    ])
+
+    H_aug = SMatrix{Dy, 2*Dx}([H z_Dy_Dx])
 
     # Create augmented model
     aug_model = create_homogeneous_linear_gaussian_model(
@@ -73,8 +91,10 @@ function main(sampler_type::samplers = DEFAULT_SAMPLER)
     println("Ground truth posterior mean: ", state.μ[(Dx+1):end])
 
     function model_builder(θ)
+        # Ensure θ is SVector to prevent type instability in the model
+        θ_static = SVector{Dx}(θ)
         return create_homogeneous_linear_gaussian_model(
-            μ0, Σ0, A, θ, Q, H, c, R
+            μ0, Σ0, A, θ_static, Q, H, c, R
         )
     end
 
@@ -84,14 +104,14 @@ function main(sampler_type::samplers = DEFAULT_SAMPLER)
     
     function b_sampler(ref_traj, rng, xs)
         # compute residuals r_t = x_t - A * x_{t-1} for t=2..T
-        residuals = [Array(ref_traj[t] - A * ref_traj[t-1]) for t in (firstindex(ref_traj) + 1):lastindex(ref_traj)]
+        residuals = [ref_traj[t] - A * ref_traj[t-1] for t in (firstindex(ref_traj) + 1):lastindex(ref_traj)]
         n = length(residuals)
         sum_r = reduce(+, residuals)
 
         Σ_post = inv(n * Qinv + Σ_prior_inv)
         μ_post = Σ_post * (Qinv * sum_r + Σ_prior_inv * μ_prior)
 
-        return rand(rng, MvNormal(vec(μ_post), Symmetric(Σ_post)))
+        return SVector{Dx}(rand(rng, MvNormal(vec(μ_post), Symmetric(Σ_post))))
     end
 
     # Setup AbstractMCMC model
@@ -119,11 +139,11 @@ function main(sampler_type::samplers = DEFAULT_SAMPLER)
         EHMM(bf, b_sampler, 10)
     end
 
-    samples = @profile sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=b_prior.μ)
-    Profile.print()
+    samples = @profile sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=SVector{Dx}(b_prior.μ))
+    # Profile.print(format=:flat, sortedby=:count, mincount=50)
 
-    # println("Posterior mean: ", mean(samples))
-    # println("Effective sample size: ", ess(hcat(samples...)'))
+    println("Posterior mean: ", mean(samples))
+    println("Effective sample size: ", ess(hcat(samples...)'))
 end
 
 main()

@@ -8,6 +8,7 @@ using StatsBase
 using Plots
 using MCMCDiagnosticTools
 using Profile
+using StaticArrays
 
 # Load local research module
 push!(LOAD_PATH, joinpath(@__DIR__, "src"))
@@ -18,7 +19,7 @@ const Dx = 2
 const Dy = 2
 const K = 10
 const T = Float64
-const N_particles = 10
+const N_particles = 100
 const N_burnin = 100
 const N_sample = 1000
 const TUNE_PARTICLES = false
@@ -40,14 +41,14 @@ function main(sampler_type::samplers = DEFAULT_SAMPLER)
     println("True σ2: ", σ2_true)
 
     # Generate model matrices/vectors
-    μ0 = rand(rng, T, Dx)
-    Σ0 = rand_cov(rng, T, Dx)
-    A = rand(rng, T, Dx, Dx)
-    b = rand(rng, T, Dx)
-    Q = rand_cov(rng, T, Dx)
-    H = rand(rng, T, Dy, Dx)
-    c = rand(rng, T, Dy)
-    R = rand_cov(rng, T, Dy)
+    μ0 = @SVector rand(rng, T, Dx)
+    Σ0 = SMatrix{Dx, Dx}(rand_cov(rng, T, Dx))
+    A = @SMatrix rand(rng, T, Dx, Dx)
+    b = @SVector rand(rng, T, Dx)
+    Q = SMatrix{Dx, Dx}(rand_cov(rng, T, Dx))
+    H = @SMatrix rand(rng, T, Dy, Dx)
+    c = @SVector rand(rng, T, Dy)
+    R = SMatrix{Dy, Dy}(rand_cov(rng, T, Dy))
 
     # Define full model and sample observations
     full_model = create_homogeneous_linear_gaussian_model(μ0, Σ0, A, b, σ2_true .* Q, H, c, σ2_true .* R)
@@ -93,10 +94,11 @@ function main(sampler_type::samplers = DEFAULT_SAMPLER)
     
     function q_sampler(ref_traj, rng, xs)
         # Residuals: process x_t - (A x_{t-1} + b), observation y_t - (H x_t + c)
-        proc_res = [Array(ref_traj[t] .- (A * ref_traj[t - 1] .+ b)) for t in (firstindex(ref_traj) + 1):lastindex(ref_traj)]
-        obs_res = [Array(ys[t] .- (H * ref_traj[t] .+ c)) for t in firstindex(ys):lastindex(ys)]
+        proc_res = [ref_traj[t] .- (A * ref_traj[t - 1] .+ b) for t in (firstindex(ref_traj) + 1):lastindex(ref_traj)]
+        obs_res = [ys[t] .- (H * ref_traj[t] .+ c) for t in firstindex(ys):lastindex(ys)]
 
         # Sum of Mahalanobis distances with base covariances (Var = θ * Q/R)
+        # proc_res elements are SVector, use dot directly
         proc_ss = sum(r -> dot(r, invQ * r), proc_res)
         obs_ss = sum(r -> dot(r, invR * r), obs_res)
         ss = proc_ss + obs_ss
@@ -107,7 +109,7 @@ function main(sampler_type::samplers = DEFAULT_SAMPLER)
         α_post = α + n / 2
         β_post = β + ss / 2
 
-        return [rand(rng, InverseGamma(α_post, β_post))]
+        return SVector{1}(rand(rng, InverseGamma(α_post, β_post)))
     end
 
     # Setup AbstractMCMC model
@@ -137,11 +139,11 @@ function main(sampler_type::samplers = DEFAULT_SAMPLER)
         EHMM(bf, q_sampler, 10)
     end
 
-    samples = @profile sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=θ_curr)
-    Profile.print()
+    samples = @profile sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=SVector{1}(θ_curr))
+    #Profile.print(format=:flat, sortedby=:count, mincount=50)
 
-    # println("Posterior mean: ", mean(samples))
-    # println("Effective sample size: ", ess(hcat(samples...)'))
+    println("Posterior mean: ", mean(samples))
+    println("Effective sample size: ", ess(hcat(samples...)'))
 end
 
 main()

@@ -14,13 +14,14 @@ using ..Utils
 
 
 using OffsetArrays
+using StaticArrays
 
 export PMMH, PGibbs, EHMM
 
 # Helper for Cholesky with jitter
 function _chol_with_jitter(Σ::AbstractMatrix; jitter=1e-8, max_tries::Int=8)
     d = size(Σ, 1)
-    Σs = Symmetric(Matrix(Σ))
+    Σs = Symmetric(Σ)
     ϵ = jitter
     for _ in 1:max_tries
         try
@@ -173,7 +174,7 @@ function AbstractMCMC.sample(
 end
 
 
-using StaticArrays
+
 
 ## EHMM ########################################################################
 
