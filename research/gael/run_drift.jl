@@ -7,6 +7,7 @@ using ProgressMeter
 using StatsBase
 using Plots
 using MCMCDiagnosticTools
+using Profile
 
 # Load local research module
 push!(LOAD_PATH, joinpath(@__DIR__, "src"))
@@ -99,7 +100,7 @@ function main(sampler_type::samplers = DEFAULT_SAMPLER)
 
     println("Starting sampling using sampler type: ", sampler_type)
 
-    b_samples = if sampler_type == PMMH_TYPE
+    sampler = if sampler_type == PMMH_TYPE
         println("Estimating log-likelihood variance...")
         b_curr = b_prior.μ
         m_curr = model_builder(b_curr)
@@ -110,20 +111,19 @@ function main(sampler_type::samplers = DEFAULT_SAMPLER)
         
         N_run = TUNE_PARTICLES ? N_est : N_particles
         bf_tuned = BF(N_run; threshold=1.0)
-        sampler = PMMH(bf_tuned; d=length(b_prior), adapt_end=N_burnin)
-        sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=b_curr)
+        PMMH(bf_tuned; d=length(b_prior), adapt_end=N_burnin)
     elseif sampler_type == PGIBBS_TYPE
-        sampler = PGibbs(bf, b_sampler)
-        sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin)
+        PGibbs(bf, b_sampler)
 
     elseif sampler_type == EHMM_TYPE
-        sampler = EHMM(bf, b_sampler, 10)
-        sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin)
+        EHMM(bf, b_sampler, 10)
     end
 
-    println("Posterior mean: ", mean(b_samples))
-    println("Effective sample size: ", ess(hcat(b_samples...)'))
+    samples = @profile sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=b_prior.μ)
+    Profile.print()
+
+    # println("Posterior mean: ", mean(samples))
+    # println("Effective sample size: ", ess(hcat(samples...)'))
 end
 
 main()
-

@@ -7,6 +7,7 @@ using ProgressMeter
 using StatsBase
 using Plots
 using MCMCDiagnosticTools
+using Profile
 
 # Load local research module
 push!(LOAD_PATH, joinpath(@__DIR__, "src"))
@@ -23,7 +24,7 @@ const N_sample = 1000
 const TUNE_PARTICLES = false
 
 @enum samplers PMMH_TYPE PGIBBS_TYPE EHMM_TYPE
-const DEFAULT_SAMPLER = EHMM_TYPE
+const DEFAULT_SAMPLER = PMMH_TYPE
 
 # Helper functions and types (Must be top level)
 struct ZeroLikelihoodModel end
@@ -118,7 +119,7 @@ function main(sampler_type::samplers = DEFAULT_SAMPLER)
 
     θ_curr = [β / (α - 1)]
 
-    samples = if sampler_type == PMMH_TYPE
+    sampler = if sampler_type == PMMH_TYPE
         println("Estimating log-likelihood variance...")
         m_curr = model_builder(θ_curr)
         
@@ -128,19 +129,19 @@ function main(sampler_type::samplers = DEFAULT_SAMPLER)
         
         N_run = TUNE_PARTICLES ? N_est : N_particles
         bf_tuned = BF(N_run; threshold=1.0)
-        sampler = PMMH(bf_tuned; d=1, adapt_end=N_burnin)
-        sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=θ_curr)
-    elseif sampler_type == PGIBBS_TYPE
-        sampler = PGibbs(bf, q_sampler)
-        sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=θ_curr)
 
+        PMMH(bf_tuned; d=1, adapt_end=N_burnin)
+    elseif sampler_type == PGIBBS_TYPE
+        PGibbs(bf, q_sampler)
     elseif sampler_type == EHMM_TYPE
-        sampler = EHMM(bf, q_sampler, 10)
-        sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=θ_curr)
+        EHMM(bf, q_sampler, 10)
     end
 
-    println("Posterior mean: ", mean(samples))
-    println("Effective sample size: ", ess(hcat(samples...)'))
+    samples = @profile sample(rng, model, sampler, ys; n_samples=N_sample, n_burnin=N_burnin, init_θ=θ_curr)
+    Profile.print()
+
+    # println("Posterior mean: ", mean(samples))
+    # println("Effective sample size: ", ess(hcat(samples...)'))
 end
 
 main()
