@@ -164,11 +164,12 @@ function run_experiment(seed::Int, sampler_name::Symbol)
     end
     
     est_mean_vec = mean(samples)
-    est_mean = est_mean_vec[1]
     
-    ess_val = ess(hcat(samples...)')[1]
+    sq_error = sum(abs2, est_mean_vec .- gt_mean)
+    
+    ess_val = ess(stack(samples)')
 
-    return (gt_mean, est_mean, ess_val, elapsed_time)
+    return (sq_error, ess_val, elapsed_time)
 end
 
 end # module

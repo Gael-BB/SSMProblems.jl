@@ -91,8 +91,8 @@ function (callback::StateCallback)(
     kwargs...,
 ) where {T}
     N = length(observations)
-    callback.proposed_states = Vector{T}(undef, N)
-    callback.filtered_states = Vector{T}(undef, N)
+    callback.proposed_states = Vector{Any}(undef, N)
+    callback.filtered_states = Vector{Any}(undef, N)
     return nothing
 end
 

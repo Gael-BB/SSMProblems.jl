@@ -42,7 +42,8 @@ function estimate_particle_count(
     filter_constructor::Function;
     target_variance::Float64 = 1.0,
     initial_N::Int = 50,
-    num_replicates::Int = 20
+    num_replicates::Int = 20,
+    max_N::Int = 20000
 )
     algo = filter_constructor(initial_N)
     logliks = Vector{Float64}(undef, num_replicates)
@@ -59,7 +60,7 @@ function estimate_particle_count(
     end
     
     projected_N = initial_N * (current_var / target_variance)
-    return ceil(Int, projected_N), current_var
+    return min( ceil(Int, projected_N), max_N ), current_var
 end
 
 end

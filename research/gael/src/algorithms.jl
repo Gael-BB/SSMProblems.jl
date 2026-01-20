@@ -6,7 +6,7 @@ using Distributions
 using LinearAlgebra
 using GeneralisedFilters
 using SSMProblems
-using ProgressMeter
+# using ProgressMeter
 using StatsBase
 using LogExpFunctions
 using ..Models
@@ -89,7 +89,7 @@ function AbstractMCMC.sample(
     _, loglik_curr = GeneralisedFilters.filter(rng, m_init, sampler.filter_algo, observations)
     
     n_accepted = 0
-    @showprogress for i in 1:(n_samples + n_burnin)
+    for i in 1:(n_samples + n_burnin)
         # Propose
         θ_prop = θ .+ (L * randn(rng, d))
         
@@ -127,7 +127,7 @@ function AbstractMCMC.sample(
         end
     end
     
-    println("Acceptance rate: ", n_accepted / (n_samples + n_burnin))
+    # println("Acceptance rate: ", n_accepted / (n_samples + n_burnin))
     return samples
 end
 
@@ -153,7 +153,7 @@ function AbstractMCMC.sample(
     samples = Vector{typeof(θ)}(undef, n_samples)
     ref_state = ref_traj
     
-    @showprogress for i in 1:(n_samples + n_burnin)
+    for i in 1:(n_samples + n_burnin)
         m = model.model_builder(θ)
         
         cb = GeneralisedFilters.DenseAncestorCallback(nothing)
@@ -411,7 +411,7 @@ function AbstractMCMC.sample(
     final_log_weights = getfield.(bf_state.particles, :log_w)
     ref_traj = backward_simulation(rng, m_init, particles, final_log_weights, observations)
     
-    @showprogress for i in 1:(n_samples + n_burnin)
+    for i in 1:(n_samples + n_burnin)
         m = model.model_builder(theta)
         
         # Run Conditional Particle Filter (CSMC)

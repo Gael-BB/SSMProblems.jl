@@ -17,14 +17,14 @@ using GaelResearch
 
 export run_experiment
 
-const Dx = 1
-const Dy = 1
+const Dx = 2
+const Dy = 2
 const K = 10
 const T = Float64
 const N_particles = 100
 const N_burnin = 100
 const N_sample = 1000
-const TUNE_PARTICLES = false
+const TUNE_PARTICLES = true
 
 @enum samplers PMMH_TYPE PGIBBS_TYPE EHMM_TYPE
 
@@ -156,11 +156,13 @@ function run_experiment(seed::Int, sampler_name::Symbol)
     end
 
     est_mean_vec = mean(samples)
-    est_mean = est_mean_vec[1]
-    
-    ess_val = ess(hcat(samples...)')[1]
 
-    return (gt_mean, est_mean, ess_val, elapsed_time)
+    diff = est_mean_vec - gt_mean_vec
+    sq_error = sum(abs2, diff)
+    
+    ess_val = ess(stack(samples)')
+
+    return (sq_error, ess_val, elapsed_time)
 end
 
 end # module
