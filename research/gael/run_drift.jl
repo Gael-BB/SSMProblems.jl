@@ -24,7 +24,7 @@ const T = Float64
 const N_particles = 100
 const N_burnin = 100
 const N_sample = 1000
-const TUNE_PARTICLES = true
+const TUNE_PARTICLES = false
 
 @enum samplers PMMH_TYPE PGIBBS_TYPE EHMM_TYPE
 
@@ -134,20 +134,33 @@ function run_experiment(seed::Int, sampler_name::Symbol)
     model = ParameterisedSSM(model_builder, b_prior)
     bf = BF(N_particles; threshold=1.0)
 
-    sampler = if sampler_type == PMMH_TYPE
+    sampler = begin
+        # Always tune particles if TUNE_PARTICLES is true
         b_curr = b_prior.μ
         m_curr = model_builder(b_curr)
         
-        N_est, V = estimate_particle_count(rng, m_curr, ys, N -> BF(N; threshold=1.0); initial_N=N_particles)
+        N_est = if TUNE_PARTICLES
+            n_est, _ = estimate_particle_count(rng, m_curr, ys, N -> BF(N; threshold=1.0); initial_N=N_particles)
+            n_est
+        else
+            N_particles
+        end
         
-        N_run = TUNE_PARTICLES ? N_est : N_particles
-        bf_tuned = BF(N_run; threshold=1.0)
-        PMMH(bf_tuned; d=length(b_prior), adapt_end=N_burnin)
-    elseif sampler_type == PGIBBS_TYPE
-        PGibbs(bf, b_sampler)
-
-    elseif sampler_type == EHMM_TYPE
-        EHMM(bf, b_sampler, 10)
+        # Use N_est for all algorithms
+        bf_tuned = BF(N_est; threshold=1.0)
+        
+        if sampler_type == PMMH_TYPE
+            PMMH(bf_tuned; d=length(b_prior), adapt_end=N_burnin + 100) # Ensure adaptation covers burnin
+        elseif sampler_type == PGIBBS_TYPE
+            PGibbs(bf_tuned, b_sampler)
+        elseif sampler_type == EHMM_TYPE
+            # Heuristic for L: roughly sqrt or fixed size, but ensure it's not tiny.
+            # user suggested max particles could be 1M. 
+            # If N=1M, L should probably be smaller than N. 
+            # Let's pick L = min(256, max(16, N_est ÷ 50)) 
+            L_val = min(256, max(16, N_est ÷ 50))
+            EHMM(bf_tuned, b_sampler, L_val)
+        end
     end
 
     samples = nothing
@@ -162,7 +175,21 @@ function run_experiment(seed::Int, sampler_name::Symbol)
     
     ess_val = ess(stack(samples)')
 
+    # output samples samples.csv
+    open("samples.csv", "w") do io
+        for sample in samples
+            for i in 1:length(sample)
+                print(io, sample[i], ",")
+            end
+            println(io)
+        end
+    end
+
     return (sq_error, ess_val, elapsed_time)
+end
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    run_experiment(1, :PGIBBS)
 end
 
 end # module

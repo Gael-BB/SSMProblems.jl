@@ -12,12 +12,12 @@ using .RunDrift
 using .RunScale
 
 # Configuration
-const NUM_TESTS = 5
+const NUM_TESTS = 100
 const OUTPUT_FILE = joinpath(@__DIR__, "output.csv")
 
 # Choose which module to run: RunDrift or RunScale
 # You can change this to RunScale to switch the experiment
-const TARGET_MODULE = RunScale
+const TARGET_MODULE = RunDrift
 
 const ALGORITHMS = [:PMMH, :PGIBBS, :EHMM]
 

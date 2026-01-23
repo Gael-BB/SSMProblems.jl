@@ -6,7 +6,7 @@ using Distributions
 using LinearAlgebra
 using GeneralisedFilters
 using SSMProblems
-# using ProgressMeter
+using ProgressMeter
 using StatsBase
 using LogExpFunctions
 using ..Models
@@ -153,7 +153,7 @@ function AbstractMCMC.sample(
     samples = Vector{typeof(θ)}(undef, n_samples)
     ref_state = ref_traj
     
-    for i in 1:(n_samples + n_burnin)
+    @showprogress for i in 1:(n_samples + n_burnin)
         m = model.model_builder(θ)
         
         cb = GeneralisedFilters.DenseAncestorCallback(nothing)

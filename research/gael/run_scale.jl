@@ -142,20 +142,28 @@ function run_experiment(seed::Int, sampler_name::Symbol)
 
     θ_curr = [β / (α - 1)]
 
-    sampler = if sampler_type == PMMH_TYPE
-        
+    
+    sampler = begin
         m_curr = model_builder(θ_curr)
         
-        N_est, V = estimate_particle_count(rng, m_curr, ys, N -> BF(N; threshold=1.0); initial_N=N_particles)
+        N_est = if TUNE_PARTICLES
+            n_est, _ = estimate_particle_count(rng, m_curr, ys, N -> BF(N; threshold=1.0); initial_N=N_particles)
+            n_est
+        else
+            N_particles
+        end
         
-        N_run = TUNE_PARTICLES ? N_est : N_particles
-        bf_tuned = BF(N_run; threshold=1.0)
-
-        PMMH(bf_tuned; d=1, adapt_end=N_burnin)
-    elseif sampler_type == PGIBBS_TYPE
-        PGibbs(bf, q_sampler)
-    elseif sampler_type == EHMM_TYPE
-        EHMM(bf, q_sampler, 10)
+        bf_tuned = BF(N_est; threshold=1.0)
+        
+        if sampler_type == PMMH_TYPE
+            PMMH(bf_tuned; d=1, adapt_end=N_burnin + 100)
+        elseif sampler_type == PGIBBS_TYPE
+            PGibbs(bf_tuned, q_sampler)
+        elseif sampler_type == EHMM_TYPE
+             # Same as drift: min(256, max(16, N_est ÷ 50))
+             L_val = min(256, max(16, N_est ÷ 50))
+             EHMM(bf_tuned, q_sampler, L_val)
+        end
     end
 
     samples = nothing
@@ -169,7 +177,18 @@ function run_experiment(seed::Int, sampler_name::Symbol)
     
     ess_val = ess(stack(samples)')
 
+    # output samples samples.csv
+    open("samples.csv", "w") do io
+        for sample in samples
+            println(io, sample[1])
+        end
+    end
+
     return (sq_error, ess_val, elapsed_time)
+end
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    run_experiment(1, :PGIBBS)
 end
 
 end # module
